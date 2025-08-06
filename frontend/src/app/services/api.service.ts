@@ -1,0 +1,126 @@
+import { Injectable } from '@angular/core';
+import { HttpClient, HttpHeaders, HttpParams } from '@angular/common/http';
+import { Observable, BehaviorSubject } from 'rxjs';
+import { environment } from '../../environments/environment';
+
+@Injectable({
+  providedIn: 'root'
+})
+export class ApiService {
+  private baseUrl = environment.apiUrl || 'http://localhost:8000/api';
+  private connectionStatus = new BehaviorSubject<boolean>(true);
+
+  constructor(private http: HttpClient) {
+    this.checkHealth();
+  }
+
+  get connectionStatus$() {
+    return this.connectionStatus.asObservable();
+  }
+
+  private getHeaders(): HttpHeaders {
+    return new HttpHeaders({
+      'Content-Type': 'application/json'
+    });
+  }
+
+  // Health Check
+  checkHealth(): Observable<any> {
+    return this.http.get(`${this.baseUrl}/health`);
+  }
+
+  // Document API
+  uploadDocuments(files: File[], documentType: string, tags: string): Observable<any> {
+    const formData = new FormData();
+    
+    files.forEach(file => {
+      formData.append('files', file);
+    });
+    
+    formData.append('document_type', documentType);
+    if (tags) {
+      formData.append('tags', tags);
+    }
+
+    return this.http.post(`${this.baseUrl}/documents/upload`, formData);
+  }
+
+  searchDocuments(searchRequest: any): Observable<any> {
+    return this.http.post(`${this.baseUrl}/documents/search`, searchRequest, {
+      headers: this.getHeaders()
+    });
+  }
+
+  getDocuments(): Observable<any> {
+    return this.http.get(`${this.baseUrl}/documents/list`);
+  }
+
+  getDocument(documentId: string): Observable<any> {
+    return this.http.get(`${this.baseUrl}/documents/${documentId}`);
+  }
+
+  deleteDocument(documentId: string): Observable<any> {
+    return this.http.delete(`${this.baseUrl}/documents/${documentId}`);
+  }
+
+  getDocumentStats(): Observable<any> {
+    return this.http.get(`${this.baseUrl}/documents/stats/overview`);
+  }
+
+  // Chat API
+  sendMessage(chatRequest: any): Observable<any> {
+    return this.http.post(`${this.baseUrl}/chat/message`, chatRequest, {
+      headers: this.getHeaders()
+    });
+  }
+
+  createSession(title?: string): Observable<any> {
+    const body = title ? { title } : {};
+    return this.http.post(`${this.baseUrl}/chat/sessions`, body, {
+      headers: this.getHeaders()
+    });
+  }
+
+  getSessions(limit: number = 50): Observable<any> {
+    const params = new HttpParams().set('limit', limit.toString());
+    return this.http.get(`${this.baseUrl}/chat/sessions`, { params });
+  }
+
+  getSession(sessionId: string): Observable<any> {
+    return this.http.get(`${this.baseUrl}/chat/sessions/${sessionId}`);
+  }
+
+  getChatHistory(sessionId: string, limit: number = 50, offset: number = 0): Observable<any> {
+    const params = new HttpParams()
+      .set('limit', limit.toString())
+      .set('offset', offset.toString());
+    
+    return this.http.get(`${this.baseUrl}/chat/sessions/${sessionId}/history`, { params });
+  }
+
+  deleteSession(sessionId: string): Observable<any> {
+    return this.http.delete(`${this.baseUrl}/chat/sessions/${sessionId}`);
+  }
+
+  updateSessionTitle(sessionId: string, title: string): Observable<any> {
+    const params = new HttpParams().set('title', title);
+    return this.http.post(`${this.baseUrl}/chat/sessions/${sessionId}/title`, null, { params });
+  }
+
+  // Health monitoring
+  private async checkConnectionStatus() {
+    try {
+      const response = await this.checkHealth().toPromise();
+      this.connectionStatus.next(true);
+    } catch (error) {
+      this.connectionStatus.next(false);
+    }
+  }
+
+  startHealthMonitoring() {
+    // Check connection status every 30 seconds
+    setInterval(() => {
+      this.checkConnectionStatus();
+    }, 30000);
+  }
+}

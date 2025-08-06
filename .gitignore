@@ -1,0 +1,58 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+.env
+.venv
+*.pyd
+*.dll
+*.so
+
+# Angular/Node.js
+frontend/node_modules/
+frontend/.angular/
+frontend/dist/
+frontend/.npm/
+frontend/.cache/
+**/node_modules/
+**/.angular/
+
+# Logs
+*.log
+backend.log
+backend_*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+nul
+
+# Test files (keep some, ignore temporary ones)
+test_*.json
+test_*.py
+
+# Uploads and processed files
+backend/uploads/
+backend/processed/
+uploads/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build outputs
+*.egg-info/
+build/
+dist/

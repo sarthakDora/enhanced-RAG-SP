@@ -1,0 +1,27 @@
+# Core FastAPI and web server
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+
+# Vector database and embeddings
+qdrant-client==1.7.0
+
+# PDF processing libraries
+PyMuPDF==1.23.14
+pdfplumber==0.10.3
+pandas==2.1.4
+
+# HTTP client for Ollama
+httpx==0.25.2
+
+# Data processing and utilities
+numpy==1.25.2
+python-dateutil==2.8.2
+
+# Environment and configuration
+python-dotenv==1.0.0
+pydantic==2.5.2
+pydantic-settings==2.1.0
+
+# Logging
+loguru==0.7.2
