@@ -17,9 +17,7 @@ from ..core.config import settings
 
 router = APIRouter()
 
-# In-memory storage for documents (use database in production)
-document_store: Dict[str, Document] = {}
-metadata_store: Dict[str, DocumentMetadata] = {}
+# Note: Using shared stores from app state (initialized in main.py)
 
 async def get_document_processor(request: Request) -> FinancialDocumentProcessor:
     """Dependency to get document processor"""
@@ -90,7 +88,9 @@ async def upload_documents(
                 qdrant_service = request.app.state.qdrant_service
                 await qdrant_service.store_chunks(document.chunks)
                 
-                # Store in memory (use database in production)
+                # Store in shared memory stores (use database in production)
+                document_store = request.app.state.shared_document_store
+                metadata_store = request.app.state.shared_metadata_store
                 document_store[document.document_id] = document
                 metadata_store[document.document_id] = document.metadata
                 
@@ -145,6 +145,7 @@ async def search_documents(
         query_embedding = await ollama_service.generate_embedding(search_request.query)
         
         # Search in Qdrant
+        metadata_store = request.app.state.shared_metadata_store
         initial_results = await qdrant_service.search_similar_chunks(
             query_embedding, search_request, metadata_store
         )
@@ -181,9 +182,11 @@ async def search_documents(
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
 
 @router.get("/list", response_model=Dict[str, Any])
-async def list_documents():
+async def list_documents(request: Request):
     """List all uploaded documents"""
     try:
+        # Get shared metadata store
+        metadata_store = request.app.state.shared_metadata_store
         documents = []
         for doc_id, metadata in metadata_store.items():
             documents.append({
@@ -210,9 +213,10 @@ async def list_documents():
         raise HTTPException(status_code=500, detail=f"Failed to list documents: {str(e)}")
 
 @router.get("/{document_id}", response_model=Dict[str, Any])
-async def get_document(document_id: str):
+async def get_document(document_id: str, request: Request):
     """Get document details"""
     try:
+        document_store = request.app.state.shared_document_store
         if document_id not in document_store:
             raise HTTPException(status_code=404, detail="Document not found")
         
@@ -251,7 +255,9 @@ async def delete_document(document_id: str, request: Request):
         qdrant_service = request.app.state.qdrant_service
         await qdrant_service.delete_document_chunks(document_id)
         
-        # Delete from memory stores
+        # Delete from shared memory stores
+        document_store = request.app.state.shared_document_store
+        metadata_store = request.app.state.shared_metadata_store
         document = document_store.pop(document_id)
         metadata_store.pop(document_id)
         
@@ -296,9 +302,10 @@ async def get_chunk(document_id: str, chunk_id: str, request: Request):
         raise HTTPException(status_code=500, detail=f"Failed to get chunk: {str(e)}")
 
 @router.get("/stats/overview", response_model=Dict[str, Any])
-async def get_document_stats():
+async def get_document_stats(request: Request):
     """Get document collection statistics"""
     try:
+        document_store = request.app.state.shared_document_store
         total_docs = len(document_store)
         total_chunks = sum(doc.metadata.total_chunks for doc in document_store.values())
         

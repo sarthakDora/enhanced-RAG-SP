@@ -9,6 +9,8 @@ import { MatChipsModule } from '@angular/material/chips';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { MatDialog } from '@angular/material/dialog';
+import { MatTooltipModule } from '@angular/material/tooltip';
+import { MatMenuModule } from '@angular/material/menu';
 import { Subscription } from 'rxjs';
 
 import { ApiService } from '../../services/api.service';
@@ -26,7 +28,9 @@ import { DocumentSearchResult } from '../../models/document.model';
     MatIconModule,
     MatCardModule,
     MatChipsModule,
-    MatProgressBarModule
+    MatProgressBarModule,
+    MatTooltipModule,
+    MatMenuModule
   ],
   template: `
     <div class="chat-container fade-in">
@@ -162,7 +166,58 @@ import { DocumentSearchResult } from '../../models/document.model';
 
       <!-- Chat Input -->
       <div class="chat-input glass-card">
+        <!-- File Attachment Area -->
+        <div *ngIf="attachedFiles.length > 0" class="attached-files">
+          <h4>Attached Files</h4>
+          <div class="file-list">
+            <div *ngFor="let file of attachedFiles; let i = index" 
+                 class="attached-file-item glass-card">
+              <mat-icon class="file-icon">{{ getFileIcon(file.name) }}</mat-icon>
+              <div class="file-info">
+                <span class="file-name">{{ file.name }}</span>
+                <span class="file-size">{{ formatFileSize(file.size) }}</span>
+              </div>
+              <button mat-icon-button 
+                      class="remove-file-btn"
+                      (click)="removeFile(i)"
+                      matTooltip="Remove file">
+                <mat-icon>close</mat-icon>
+              </button>
+            </div>
+          </div>
+        </div>
+
         <div class="input-container">
+          <!-- File Input (Hidden) -->
+          <input #fileInput 
+                 type="file" 
+                 multiple 
+                 accept=".pdf,.docx,.txt,.xlsx,.csv"
+                 (change)="onFileSelected($event)"
+                 style="display: none;">
+
+          <!-- Attachment Button -->
+          <button mat-icon-button 
+                  class="glass-button attachment-btn"
+                  (click)="fileInput.click()"
+                  [disabled]="isLoading"
+                  matTooltip="Attach files"
+                  [matMenuTriggerFor]="attachmentMenu">
+            <mat-icon>attach_file</mat-icon>
+          </button>
+
+          <!-- Attachment Menu -->
+          <mat-menu #attachmentMenu="matMenu">
+            <button mat-menu-item (click)="fileInput.click()">
+              <mat-icon>upload_file</mat-icon>
+              <span>Upload New Files</span>
+            </button>
+            <button mat-menu-item (click)="showExistingDocuments()">
+              <mat-icon>folder</mat-icon>
+              <span>Use Existing Documents</span>
+            </button>
+          </mat-menu>
+          
           <mat-form-field appearance="outline" class="message-input">
             <input matInput 
                    [(ngModel)]="currentMessage" 
@@ -175,7 +230,7 @@ import { DocumentSearchResult } from '../../models/document.model';
           <button mat-fab 
                   color="primary"
                   class="send-button glass-button"
-                  [disabled]="!currentMessage.trim() || isLoading"
+                  [disabled]="(!currentMessage.trim() && attachedFiles.length === 0) || isLoading"
                   (click)="sendMessage()">
             <mat-icon>{{ isLoading ? 'hourglass_empty' : 'send' }}</mat-icon>
           </button>
@@ -186,6 +241,20 @@ import { DocumentSearchResult } from '../../models/document.model';
                           mode="indeterminate" 
                           class="progress-bar">
         </mat-progress-bar>
+
+        <!-- Upload Progress -->
+        <div *ngIf="isUploading" class="upload-progress">
+          <div class="upload-status">
+            <mat-icon class="upload-icon">cloud_upload</mat-icon>
+            <span>Uploading files...</span>
+            <span class="upload-count">{{ uploadedCount }}/{{ totalFiles }}</span>
+          </div>
+          <mat-progress-bar 
+            mode="determinate" 
+            [value]="uploadProgress"
+            class="upload-progress-bar">
+          </mat-progress-bar>
+        </div>
       </div>
     </div>
   `,
@@ -494,6 +563,96 @@ import { DocumentSearchResult } from '../../models/document.model';
       border-radius: 2px;
     }
 
+    /* File Attachment Styles */
+    .attached-files {
+      margin-bottom: 16px;
+      padding: 16px;
+      background: var(--glass-secondary);
+      border-radius: 12px;
+    }
+
+    .attached-files h4 {
+      margin: 0 0 12px 0;
+      font-size: 14px;
+      color: var(--text-secondary);
+    }
+
+    .file-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .attached-file-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      background: var(--glass-primary);
+    }
+
+    .file-icon {
+      color: var(--text-primary);
+    }
+
+    .file-info {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .file-name {
+      font-size: 14px;
+      font-weight: 500;
+    }
+
+    .file-size {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .remove-file-btn {
+      opacity: 0.7;
+    }
+
+    .remove-file-btn:hover {
+      opacity: 1;
+      color: #f44336;
+    }
+
+    .attachment-btn {
+      margin-right: 8px;
+    }
+
+    .upload-progress {
+      margin-top: 12px;
+    }
+
+    .upload-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+      font-size: 14px;
+    }
+
+    .upload-icon {
+      color: var(--text-primary);
+    }
+
+    .upload-count {
+      margin-left: auto;
+      background: var(--glass-secondary);
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 12px;
+    }
+
+    .upload-progress-bar {
+      border-radius: 4px;
+    }
+
     /* Responsive Design */
     @media (max-width: 768px) {
       .chat-container {
@@ -525,6 +684,7 @@ import { DocumentSearchResult } from '../../models/document.model';
 export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
   @ViewChild('chatContainer') chatContainer!: ElementRef;
   @ViewChild('messageInput') messageInput!: ElementRef;
+  @ViewChild('fileInput') fileInput!: ElementRef;
 
   messages: ChatMessage[] = [];
   currentMessage = '';
@@ -532,6 +692,13 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
   isLoading = false;
   isTyping = false;
   showSettings = false;
+
+  // File attachment properties
+  attachedFiles: File[] = [];
+  isUploading = false;
+  uploadProgress = 0;
+  uploadedCount = 0;
+  totalFiles = 0;
 
   private subscriptions: Subscription[] = [];
 
@@ -600,13 +767,18 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
     this.isTyping = true;
 
     try {
+      // Upload files first if any are attached
+      if (this.attachedFiles.length > 0) {
+        await this.uploadAttachedFiles();
+      }
+
       const chatRequest: ChatRequest = {
         session_id: this.currentSession?.session_id,
         message: message,
         use_rag: true,
         top_k: 10,
         rerank_top_k: 3,
-        similarity_threshold: 0.7,
+        similarity_threshold: 0.3, // Lower threshold for better retrieval
         temperature: 0.1,
         max_tokens: 1000
       };
@@ -674,10 +846,10 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
   }
 
   getConfidenceIcon(score?: number): string {
-    if (!score) return 'help';
+    if (!score || score === 0) return 'help_outline';
     if (score >= 0.8) return 'check_circle';
-    if (score >= 0.6) return 'warning';
-    return 'error';
+    if (score >= 0.6) return 'info';
+    return 'warning';
   }
 
   getConfidenceText(score?: number): string {
@@ -718,5 +890,106 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
 
   private generateId(): string {
     return Math.random().toString(36).substring(2) + Date.now().toString(36);
+  }
+
+  // File attachment methods
+  onFileSelected(event: Event) {
+    const input = event.target as HTMLInputElement;
+    if (input.files) {
+      const files = Array.from(input.files);
+      this.attachedFiles.push(...files);
+    }
+    // Clear input to allow selecting same file again
+    input.value = '';
+  }
+
+  removeFile(index: number) {
+    this.attachedFiles.splice(index, 1);
+  }
+
+  getFileIcon(filename: string): string {
+    const extension = filename.split('.').pop()?.toLowerCase();
+    
+    switch (extension) {
+      case 'pdf':
+        return 'picture_as_pdf';
+      case 'docx':
+      case 'doc':
+        return 'description';
+      case 'txt':
+        return 'text_snippet';
+      case 'xlsx':
+      case 'xls':
+        return 'table_chart';
+      case 'csv':
+        return 'grid_on';
+      default:
+        return 'insert_drive_file';
+    }
+  }
+
+  formatFileSize(bytes: number): string {
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    if (bytes === 0) return '0 Bytes';
+    const i = Math.floor(Math.log(bytes) / Math.log(1024));
+    return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
+  }
+
+  async uploadAttachedFiles(): Promise<void> {
+    if (this.attachedFiles.length === 0) return;
+
+    this.isUploading = true;
+    this.uploadProgress = 0;
+    this.uploadedCount = 0;
+    this.totalFiles = this.attachedFiles.length;
+
+    try {
+      const uploadPromises = this.attachedFiles.map(async (file, index) => {
+        try {
+          const response = await this.apiService.uploadDocuments(
+            [file],
+            'other', // Default document type
+            'chat-attachment'
+          ).toPromise();
+          
+          this.uploadedCount++;
+          this.uploadProgress = (this.uploadedCount / this.totalFiles) * 100;
+          
+          return response;
+        } catch (error) {
+          console.error(`Failed to upload ${file.name}:`, error);
+          throw error;
+        }
+      });
+
+      await Promise.all(uploadPromises);
+      
+      this.showSuccess(`Successfully uploaded ${this.uploadedCount} file(s)`);
+      
+      // Clear attached files after successful upload
+      this.attachedFiles = [];
+      
+    } catch (error) {
+      this.showError('Some files failed to upload. Please try again.');
+    } finally {
+      this.isUploading = false;
+      this.uploadProgress = 0;
+      this.uploadedCount = 0;
+      this.totalFiles = 0;
+    }
+  }
+
+  showExistingDocuments() {
+    // Navigate to documents page or show existing documents dialog
+    console.log('Show existing documents');
+    // You could implement a dialog here to show existing documents
+    // and allow users to select which ones to use in the chat
+  }
+
+  private showSuccess(message: string) {
+    this.snackBar.open(message, 'Close', {
+      duration: 3000,
+      panelClass: ['success-snackbar']
+    });
   }
 }

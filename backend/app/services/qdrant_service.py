@@ -221,6 +221,22 @@ class QdrantService:
                     if document_metadata and "document_id" in payload:
                         doc_metadata = document_metadata.get(payload["document_id"])
                     
+                    # Create default metadata if none exists
+                    if doc_metadata is None:
+                        from ..models.document import DocumentMetadata, DocumentType
+                        from datetime import datetime
+                        doc_metadata = DocumentMetadata(
+                            filename=payload.get("filename", f"document_{payload.get('document_id', 'unknown')[:8]}.txt"),
+                            file_size=payload.get("file_size", 1000),  # Default size
+                            file_type=payload.get("file_type", ".txt"),
+                            document_type=DocumentType.OTHER,  # Use enum
+                            upload_timestamp=datetime.now(),  # Current timestamp
+                            total_pages=payload.get("total_pages", 1),
+                            total_chunks=payload.get("total_chunks", 1),
+                            has_financial_data=payload.get("has_financial_data", False),
+                            confidence_score=payload.get("confidence_score", result.score)
+                        )
+                    
                     search_result = DocumentSearchResult(
                         chunk_id=str(result.id),
                         document_id=payload.get("document_id", "unknown"),

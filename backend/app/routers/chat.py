@@ -40,7 +40,26 @@ async def get_chat_service(request: Request) -> ChatService:
     """Dependency to get chat service"""
     ollama_service = request.app.state.ollama_service
     qdrant_service = request.app.state.qdrant_service
-    return ChatService(ollama_service, qdrant_service)
+    chat_service = ChatService(ollama_service, qdrant_service)
+    
+    # Inject shared metadata store
+    chat_service.document_metadata_cache = request.app.state.shared_metadata_store
+    chat_service.agent_orchestrator.metadata_store = request.app.state.shared_metadata_store
+    
+    return chat_service
+
+@router.get("/debug/metadata", response_model=Dict[str, Any])
+async def debug_metadata_store(request: Request):
+    """Debug endpoint to check shared metadata store"""
+    try:
+        shared_store = request.app.state.shared_metadata_store
+        return {
+            "shared_metadata_count": len(shared_store),
+            "shared_metadata_keys": list(shared_store.keys()),
+            "sample_metadata": list(shared_store.values())[0].__dict__ if shared_store else None
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 @router.post("/message", response_model=ChatResponse)
 async def send_message(
