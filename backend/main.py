@@ -34,16 +34,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"Ollama connection failed: {e}")
     
-    # Create shared document metadata store
+    # Create single shared document store and metadata store
     from typing import Dict, Any
-    shared_metadata_store: Dict[str, Any] = {}
     shared_document_store: Dict[str, Any] = {}
-    
+    shared_metadata_store: Dict[str, Any] = {}
+
     # Store services and shared stores in app state
     app.state.qdrant_service = qdrant_service
     app.state.ollama_service = ollama_service
-    app.state.shared_metadata_store = shared_metadata_store
     app.state.shared_document_store = shared_document_store
+    app.state.shared_metadata_store = shared_metadata_store
     
     yield
     

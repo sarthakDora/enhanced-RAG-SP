@@ -11,9 +11,9 @@ echo Waiting for services to initialize...
 timeout /t 5 /nobreak >nul
 
 REM Start Backend
-echo Starting FastAPI backend on http://localhost:8001...
+echo Starting FastAPI backend on http://localhost:8000...
 cd backend
-start "Enhanced RAG Backend" cmd /k "../venv/Scripts/python.exe -m uvicorn main:app --host 127.0.0.1 --port 8001 --reload"
+start "Enhanced RAG Backend" cmd /k "../venv/Scripts/python.exe -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload"
 cd ..
 
 REM Wait for backend to start
@@ -30,7 +30,7 @@ echo.
 echo ===================================
 echo Enhanced RAG System is starting!
 echo ===================================
-echo Backend API: http://localhost:8001
+echo Backend API: http://localhost:8000
 echo Frontend UI: http://localhost:4200
 echo Qdrant Dashboard: http://localhost:6333/dashboard
 echo.
