@@ -1,9 +1,11 @@
+
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from typing import Dict, Any, List
 import json
 import asyncio
 import logging
+from datetime import datetime
 
 from ..models.chat import (
     ChatRequest, ChatResponse, ChatHistoryRequest, 
@@ -41,11 +43,21 @@ async def get_chat_service(request: Request) -> ChatService:
     ollama_service = request.app.state.ollama_service
     qdrant_service = request.app.state.qdrant_service
     chat_service = ChatService(ollama_service, qdrant_service)
-    
-    # Inject shared metadata store
-    chat_service.document_metadata_cache = request.app.state.shared_metadata_store
-    chat_service.agent_orchestrator.metadata_store = request.app.state.shared_metadata_store
-    
+
+    # Ensure all values in shared_metadata_store are DocumentMetadata objects
+    from ..models.document import DocumentMetadata
+    shared_metadata_store = request.app.state.shared_metadata_store
+    for k, v in list(shared_metadata_store.items()):
+        if isinstance(v, dict):
+            try:
+                shared_metadata_store[k] = DocumentMetadata(**v)
+            except Exception as e:
+                # Remove invalid/corrupt metadata
+                del shared_metadata_store[k]
+
+    chat_service.document_metadata_cache = shared_metadata_store
+    chat_service.agent_orchestrator.metadata_store = shared_metadata_store
+
     return chat_service
 
 @router.get("/debug/metadata", response_model=Dict[str, Any])

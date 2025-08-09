@@ -1,7 +1,7 @@
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     VectorParams, Distance, PointStruct, Filter, FieldCondition, 
-    Match, Range, PayloadSelector, SearchRequest
+    Match, Range, PayloadSelector, SearchRequest, FilterSelector
 )
 from typing import List, Dict, Any, Optional
 import uuid
@@ -301,22 +301,32 @@ class QdrantService:
     async def delete_document_chunks(self, document_id: str) -> bool:
         """Delete all chunks for a specific document"""
         try:
-            filter_condition = Filter(
-                must=[
-                    FieldCondition(
-                        key="document_id",
-                        match=Match(value=document_id)
-                    )
-                ]
-            )
+            # Use REST API directly to avoid typing issues
+            filter_data = {
+                "filter": {
+                    "must": [
+                        {
+                            "key": "document_id",
+                            "match": {"value": document_id}
+                        }
+                    ]
+                }
+            }
             
-            self.client.delete(
-                collection_name=self.collection_name,
-                points_selector=filter_condition
-            )
-            
-            logger.info(f"Deleted chunks for document: {document_id}")
-            return True
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    f"{settings.QDRANT_URL}/collections/{self.collection_name}/points/delete",
+                    json=filter_data,
+                    headers={"Content-Type": "application/json"}
+                )
+                
+                if response.status_code in [200, 202]:
+                    logger.info(f"Deleted chunks for document: {document_id}")
+                    return True
+                else:
+                    logger.error(f"Failed to delete chunks: {response.status_code} - {response.text}")
+                    raise Exception(f"Failed to delete chunks: {response.status_code} - {response.text}")
+                    
         except Exception as e:
             logger.error(f"Failed to delete chunks for document {document_id}: {e}")
             raise
@@ -338,3 +348,42 @@ class QdrantService:
         except Exception as e:
             logger.error(f"Failed to get collection stats: {e}")
             raise
+
+    async def get_all_points(self) -> List[Dict[str, Any]]:
+        """Get all points from the collection"""
+        try:
+            # Scroll through all points in the collection
+            points = []
+            offset = None
+            limit = 100  # Process in batches
+            
+            while True:
+                scroll_result = self.client.scroll(
+                    collection_name=self.collection_name,
+                    limit=limit,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=False  # We don't need vectors for metadata reload
+                )
+                
+                if not scroll_result[0]:  # No more points
+                    break
+                
+                for point in scroll_result[0]:
+                    points.append({
+                        "id": str(point.id),
+                        "payload": point.payload
+                    })
+                
+                # Get next offset
+                if len(scroll_result[0]) < limit:
+                    break
+                    
+                offset = scroll_result[1]  # Next offset
+            
+            logger.info(f"Retrieved {len(points)} points from collection")
+            return points
+            
+        except Exception as e:
+            logger.error(f"Failed to get all points: {e}")
+            return []

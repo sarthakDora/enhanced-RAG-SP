@@ -5,7 +5,10 @@ import os
 import uuid
 import shutil
 import asyncio
+import logging
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 from ..models.document import (
     DocumentType, DocumentUpload, DocumentSearchRequest, 
@@ -88,12 +91,17 @@ async def upload_documents(
                 qdrant_service = request.app.state.qdrant_service
                 await qdrant_service.store_chunks(document.chunks)
                 
-                # Store in shared memory stores (use database in production)
+                # Store in shared memory store (use database in production)
+
                 document_store = request.app.state.shared_document_store
                 metadata_store = request.app.state.shared_metadata_store
                 document_store[document.document_id] = document
-                metadata_store[document.document_id] = document.metadata
-                
+                # Ensure only DocumentMetadata objects are stored
+                meta = document.metadata
+                if isinstance(meta, dict):
+                    meta = DocumentMetadata(**meta)
+                metadata_store[document.document_id] = meta
+
                 uploaded_docs.append({
                     "document_id": document.document_id,
                     "filename": file.filename,
@@ -145,7 +153,8 @@ async def search_documents(
         query_embedding = await ollama_service.generate_embedding(search_request.query)
         
         # Search in Qdrant
-        metadata_store = request.app.state.shared_metadata_store
+        document_store = request.app.state.shared_document_store
+        metadata_store = {doc_id: doc.metadata for doc_id, doc in document_store.items()}
         initial_results = await qdrant_service.search_similar_chunks(
             query_embedding, search_request, metadata_store
         )
@@ -185,10 +194,11 @@ async def search_documents(
 async def list_documents(request: Request):
     """List all uploaded documents"""
     try:
-        # Get shared metadata store
-        metadata_store = request.app.state.shared_metadata_store
+        # Get shared document store
+        document_store = request.app.state.shared_document_store
         documents = []
-        for doc_id, metadata in metadata_store.items():
+        for doc_id, document in document_store.items():
+            metadata = document.metadata
             documents.append({
                 "document_id": doc_id,
                 "filename": metadata.filename,
@@ -244,10 +254,13 @@ async def get_document(document_id: str, request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get document: {str(e)}")
 
-@router.delete("/{document_id}", response_model=Dict[str, str])
+@router.delete("/{document_id}")
 async def delete_document(document_id: str, request: Request):
     """Delete a document and its chunks"""
     try:
+        # Get shared store from app state
+        document_store = request.app.state.shared_document_store
+        
         if document_id not in document_store:
             raise HTTPException(status_code=404, detail="Document not found")
         
@@ -255,23 +268,21 @@ async def delete_document(document_id: str, request: Request):
         qdrant_service = request.app.state.qdrant_service
         await qdrant_service.delete_document_chunks(document_id)
         
-        # Delete from shared memory stores
-        document_store = request.app.state.shared_document_store
-        metadata_store = request.app.state.shared_metadata_store
+        # Delete from shared memory store  
         document = document_store.pop(document_id)
-        metadata_store.pop(document_id)
         
         # Try to delete the uploaded file
         try:
-            file_id = document.metadata.custom_fields.get('file_id')
+            # Simplify this part to avoid any Union type issues
+            file_id = getattr(document.metadata, 'custom_fields', {}).get('file_id')
             if file_id:
                 file_path = os.path.join(settings.UPLOAD_DIR, f"{file_id}_{document.metadata.filename}")
                 if os.path.exists(file_path):
                     os.remove(file_path)
-        except Exception as e:
-            # File deletion is not critical
-            pass
+        except:
+            pass  # File deletion is not critical
         
+        # Return simple dict instead of JSONResponse to avoid typing issues
         return {"message": f"Document {document_id} deleted successfully"}
         
     except HTTPException:
@@ -331,3 +342,76 @@ async def get_document_stats(request: Request):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get stats: {str(e)}")
+
+@router.post("/reload-metadata", response_model=Dict[str, Any])
+async def reload_metadata_from_qdrant(request: Request):
+    """Reload document metadata from Qdrant into shared memory stores"""
+    try:
+        # Get services
+        qdrant_service = request.app.state.qdrant_service
+        document_store = request.app.state.shared_document_store
+        metadata_store = request.app.state.shared_metadata_store
+        
+        # Get all points from Qdrant collection
+        all_points = await qdrant_service.get_all_points()
+        
+        if not all_points:
+            return {
+                "message": "No documents found in Qdrant collection",
+                "documents_loaded": 0,
+                "metadata_loaded": 0
+            }
+        
+        # Group chunks by document_id and reconstruct document metadata
+        document_chunks = {}
+        for point in all_points:
+            payload = point.get("payload", {})
+            doc_id = payload.get("document_id")
+            if doc_id:
+                if doc_id not in document_chunks:
+                    document_chunks[doc_id] = []
+                document_chunks[doc_id].append(payload)
+        
+        # Reconstruct documents and metadata
+        loaded_docs = 0
+        loaded_metadata = 0
+        
+        for doc_id, chunks in document_chunks.items():
+            try:
+                # Get the first chunk to extract document metadata
+                first_chunk = chunks[0]
+                
+                # Create DocumentMetadata from the first chunk's metadata
+                doc_metadata = DocumentMetadata(
+                    filename=first_chunk.get("filename", f"document_{doc_id[:8]}.txt"),
+                    file_size=first_chunk.get("file_size", 1000),
+                    file_type=first_chunk.get("file_type", ".txt"),
+                    document_type=first_chunk.get("document_type", "other"),
+                    upload_timestamp=first_chunk.get("upload_timestamp", datetime.now().isoformat()),
+                    total_pages=first_chunk.get("total_pages", 1),
+                    total_chunks=len(chunks),
+                    has_financial_data=first_chunk.get("has_financial_data", False),
+                    confidence_score=first_chunk.get("confidence_score", 0.5),
+                    tags=first_chunk.get("tags", []),
+                    custom_fields=first_chunk.get("custom_fields", {})
+                )
+                
+                # Store in shared metadata store
+                metadata_store[doc_id] = doc_metadata
+                loaded_metadata += 1
+                
+                logger.info(f"Loaded metadata for document {doc_id}: {doc_metadata.filename}")
+                
+            except Exception as e:
+                logger.error(f"Failed to load metadata for document {doc_id}: {e}")
+                continue
+        
+        return {
+            "message": f"Reloaded {loaded_metadata} document metadata from Qdrant",
+            "documents_found_in_qdrant": len(document_chunks),
+            "metadata_loaded": loaded_metadata,
+            "total_chunks_found": len(all_points)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to reload metadata: {str(e)}")

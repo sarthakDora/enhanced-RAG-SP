@@ -39,15 +39,19 @@ class ChatService:
         
     async def create_session(self, title: str = "New Conversation") -> ChatSession:
         """Create a new chat session"""
+        now = datetime.now()
         session_id = str(uuid.uuid4())
         session = ChatSession(
             session_id=session_id,
             title=title,
-            created_at=datetime.now(),
-            updated_at=datetime.now(),
-            last_activity=datetime.now()
+            created_at=now,
+            updated_at=now,
+            last_activity=now,
+            messages=[],
+            is_active=True,
+            active_documents=[],
+            financial_context={}
         )
-        
         self.sessions[session_id] = session
         logger.info(f"Created new chat session: {session_id}")
         return session
@@ -98,132 +102,168 @@ class ChatService:
                 "user_preferences": getattr(request, 'user_preferences', {})
             }
             
-            # TEMPORARY FIX: Use direct document retrieval instead of multi-agent system
+            # Enhanced RAG system with proper guardrails
             generation_start = time.time()
             
-            # Perform direct document search for comparison
             if request.use_rag:
                 try:
-                    # Generate query embedding
-                    logger.info(f"Generating embedding for query: '{request.message}'")
-                    query_embedding = await self.ollama_service.generate_embedding(request.message)
-                    logger.info(f"Generated embedding with {len(query_embedding)} dimensions")
-                    
-                    # Create search request
-                    from ..models.document import DocumentSearchRequest
-                    search_request = DocumentSearchRequest(
-                        query=request.message,
-                        top_k=request.top_k or 10,
-                        similarity_threshold=request.similarity_threshold or 0.3,
-                        use_reranking=True,
-                        rerank_top_k=request.rerank_top_k or 3
-                    )
-                    logger.info(f"Search request: top_k={search_request.top_k}, threshold={search_request.similarity_threshold}")
-                    
-                    # Search documents directly using the metadata cache
-                    logger.info(f"Metadata cache has {len(self.document_metadata_cache)} documents")
-                    logger.info(f"Metadata cache keys: {list(self.document_metadata_cache.keys())}")
-                    
-                    search_results = await self.qdrant_service.search_similar_chunks(
-                        query_embedding=query_embedding,
-                        search_request=search_request,
-                        document_metadata=self.document_metadata_cache
-                    )
-                    
-                    logger.info(f"Direct search found {len(search_results)} documents")
-                    if search_results:
-                        logger.info(f"First result score: {search_results[0].score}")
-                    else:
-                        logger.warning("No search results returned from Qdrant service")
-                    
-                    # Generate RAG response using the existing method
-                    if search_results:
-                        context_documents = []
-                        for source in search_results:
-                            context_documents.append({
-                                'filename': source.document_metadata.filename if source.document_metadata else 'Unknown Document',
-                                'content': source.content,
-                                'document_type': source.document_metadata.document_type if source.document_metadata else None,
-                                'confidence': source.score
-                            })
-                        
-                        # Get conversation history
-                        conversation_history = [
-                            {"role": msg.role, "content": msg.content}
-                            for msg in session.messages[-10:]
-                            if msg.role in ['user', 'assistant']
-                        ]
-                        
-                        response_data = await self.ollama_service.generate_rag_response(
-                            query=request.message,
-                            context_documents=context_documents,
-                            conversation_history=conversation_history,
-                            temperature=request.temperature
-                        )
-                        
-                        # Create mock agent response format
+                    # Check if we have any uploaded documents
+                    if not self.document_metadata_cache:
                         agent_response = {
-                            "answer": response_data["response"],
-                            "confidence": 0.8,
-                            "sources": [
-                                {
-                                    "filename": doc['filename'],
-                                    "content": doc['content'][:200] + "...",
-                                    "confidence": doc['confidence'],
-                                    "document_type": doc.get('document_type', 'unknown')
-                                }
-                                for doc in context_documents
-                            ],
-                            "total_agents_used": 1,
-                            "processing_time": (time.time() - generation_start),
-                            "agent_responses": [{"agent": "document_retriever", "success": True, "confidence": 0.8}]
-                        }
-                    else:
-                        # No documents found, use direct response
-                        direct_response = await self.ollama_service.generate_response(
-                            prompt=request.message,
-                            context="",
-                            temperature=request.temperature,
-                            system_prompt=self._get_financial_system_prompt()
-                        )
-                        agent_response = {
-                            "answer": direct_response["response"],
-                            "confidence": 0.3,
+                            "answer": "I don't have any documents uploaded to search through. Please upload relevant documents first before asking questions about specific data or reports.",
+                            "confidence": 1.0,
                             "sources": [],
                             "total_agents_used": 1,
                             "processing_time": (time.time() - generation_start),
-                            "agent_responses": [{"agent": "direct_responder", "success": True, "confidence": 0.3}]
+                            "agent_responses": [{"agent": "no_documents_guard", "success": True, "confidence": 1.0}]
                         }
+                    else:
+                        # Generate query embedding
+                        logger.info(f"Generating embedding for query: '{request.message}'")
+                        query_embedding = await self.ollama_service.generate_embedding(request.message)
+                        logger.info(f"Generated embedding with {len(query_embedding)} dimensions")
+                        
+                        # Create search request with stricter similarity threshold
+                        from ..models.document import DocumentSearchRequest
+                        search_request = DocumentSearchRequest(
+                            query=request.message,
+                            top_k=request.top_k or 10,
+                            similarity_threshold=request.similarity_threshold or 0.5,  # Stricter threshold
+                            use_reranking=True,
+                            rerank_top_k=request.rerank_top_k or 3
+                        )
+                        logger.info(f"Search request: top_k={search_request.top_k}, threshold={search_request.similarity_threshold}")
+                        
+                        # Search documents directly using the metadata cache
+                        logger.info(f"Metadata cache has {len(self.document_metadata_cache)} documents")
+                        logger.info(f"Available documents: {[meta.filename for meta in self.document_metadata_cache.values()]}")
+                        
+                        search_results = await self.qdrant_service.search_similar_chunks(
+                            query_embedding=query_embedding,
+                            search_request=search_request,
+                            document_metadata=self.document_metadata_cache
+                        )
+                        
+                        logger.info(f"Direct search found {len(search_results)} documents")
+                        if search_results:
+                            logger.info(f"Top result score: {search_results[0].score}, document: {search_results[0].document_metadata.filename if search_results[0].document_metadata else 'Unknown'}")
+                        
+                        # Apply guardrails for document relevance
+                        if not search_results or (search_results and search_results[0].score < 0.4):
+                            # Check if query seems to be asking for specific data
+                            data_keywords = ['top', 'contributors', 'performance', 'attribution', 'analysis', 
+                                           'report', 'data', 'results', 'findings', 'summary', 'metrics',
+                                           'statistics', 'numbers', 'figures', 'breakdown', 'details']
+                            
+                            query_lower = request.message.lower()
+                            asks_for_specific_data = any(keyword in query_lower for keyword in data_keywords)
+                            
+                            if asks_for_specific_data:
+                                available_docs = [meta.filename for meta in self.document_metadata_cache.values()]
+                                agent_response = {
+                                    "answer": f"I couldn't find relevant data in the uploaded documents to answer your question. Available documents: {', '.join(available_docs)}. Please ensure you're asking about information contained in these documents, or upload the relevant documents that contain the data you're looking for.",
+                                    "confidence": 1.0,
+                                    "sources": [],
+                                    "total_agents_used": 1,
+                                    "processing_time": (time.time() - generation_start),
+                                    "agent_responses": [{"agent": "no_relevant_data_guard", "success": True, "confidence": 1.0}]
+                                }
+                            else:
+                                # General question, provide general response with disclaimer
+                                direct_response = await self.ollama_service.generate_response(
+                                    prompt=request.message,
+                                    context="",
+                                    temperature=request.temperature,
+                                    system_prompt=self._get_financial_system_prompt() + "\n\nIMPORTANT: You are responding to a general question. Make it clear that your response is not based on specific uploaded documents."
+                                )
+                                
+                                disclaimer = "\n\n*Note: This response is based on general knowledge, not specific uploaded documents. For document-specific questions, please ensure relevant documents are uploaded.*"
+                                
+                                agent_response = {
+                                    "answer": direct_response["response"] + disclaimer,
+                                    "confidence": 0.6,
+                                    "sources": [],
+                                    "total_agents_used": 1,
+                                    "processing_time": (time.time() - generation_start),
+                                    "agent_responses": [{"agent": "general_responder", "success": True, "confidence": 0.6}]
+                                }
+                        else:
+                            # Found relevant documents - proceed with RAG response
+                            context_documents = []
+                            for source in search_results:
+                                context_documents.append({
+                                    'filename': source.document_metadata.filename if source.document_metadata else 'Unknown Document',
+                                    'content': source.content,
+                                    'document_type': source.document_metadata.document_type if source.document_metadata else None,
+                                    'confidence': source.score
+                                })
+                            
+                            # Get conversation history
+                            conversation_history = [
+                                {"role": msg.role, "content": msg.content}
+                                for msg in session.messages[-10:]
+                                if msg.role in ['user', 'assistant']
+                            ]
+                            
+                            response_data = await self.ollama_service.generate_rag_response(
+                                query=request.message,
+                                context_documents=context_documents,
+                                conversation_history=conversation_history,
+                                temperature=request.temperature
+                            )
+                            
+                            # Enhanced system prompt for document-based responses
+                            enhanced_response = response_data["response"]
+                            if not enhanced_response.lower().startswith(("based on", "according to", "from the")):
+                                doc_names = list(set([doc['filename'] for doc in context_documents]))
+                                source_mention = f"Based on the uploaded document(s) {', '.join(doc_names)}: "
+                                enhanced_response = source_mention + enhanced_response
+                            
+                            agent_response = {
+                                "answer": enhanced_response,
+                                "confidence": min(0.95, search_results[0].score + 0.1),
+                                "sources": [
+                                    {
+                                        "filename": doc['filename'],
+                                        "content": doc['content'][:200] + "...",
+                                        "confidence": doc['confidence'],
+                                        "document_type": doc.get('document_type', 'unknown')
+                                    }
+                                    for doc in context_documents
+                                ],
+                                "total_agents_used": 1,
+                                "processing_time": (time.time() - generation_start),
+                                "agent_responses": [{"agent": "document_retriever", "success": True, "confidence": min(0.95, search_results[0].score + 0.1)}]
+                            }
+                            
                 except Exception as e:
-                    logger.error(f"Direct document retrieval failed: {e}")
-                    # Fallback to basic response
-                    direct_response = await self.ollama_service.generate_response(
-                        prompt=request.message,
-                        context="",
-                        temperature=request.temperature
-                    )
+                    logger.error(f"RAG processing failed: {e}")
                     agent_response = {
-                        "answer": direct_response["response"],
+                        "answer": "I encountered an error while searching through the uploaded documents. Please try rephrasing your question or check if the documents are properly uploaded.",
                         "confidence": 0.1,
                         "sources": [],
                         "total_agents_used": 1,
                         "processing_time": (time.time() - generation_start),
-                        "agent_responses": [{"agent": "fallback", "success": True, "confidence": 0.1}]
+                        "agent_responses": [{"agent": "error_handler", "success": False, "confidence": 0.1}]
                     }
             else:
-                # Non-RAG request
+                # Non-RAG request - general knowledge question
                 direct_response = await self.ollama_service.generate_response(
                     prompt=request.message,
                     context="",
-                    temperature=request.temperature
+                    temperature=request.temperature,
+                    system_prompt=self._get_financial_system_prompt() + "\n\nIMPORTANT: This is a general knowledge question. Be clear that your response is not based on specific documents."
                 )
+                
+                disclaimer = "\n\n*Note: This response is based on general knowledge, not specific uploaded documents.*"
+                
                 agent_response = {
-                    "answer": direct_response["response"],
+                    "answer": direct_response["response"] + disclaimer,
                     "confidence": 0.7,
                     "sources": [],
                     "total_agents_used": 1,
                     "processing_time": (time.time() - generation_start),
-                    "agent_responses": [{"agent": "direct_responder", "success": True, "confidence": 0.7}]
+                    "agent_responses": [{"agent": "general_knowledge", "success": True, "confidence": 0.7}]
                 }
             
             # Continue with existing logic...
@@ -487,22 +527,28 @@ Key Guidelines:
 3. PRECISION: Use exact figures and proper financial terminology
 4. RISK AWARENESS: Highlight assumptions, limitations, and potential risks
 5. COMPLIANCE: Consider regulatory implications and disclosure requirements
+6. DOCUMENT FOCUS: When analyzing uploaded documents, base your answers strictly on the document content
 
 When analyzing financial data:
 - Verify mathematical calculations
 - Consider seasonal and cyclical factors
-- Compare against industry benchmarks
-- Highlight trends and anomalies
-- Provide context for performance metrics
+- Compare against industry benchmarks when data is available in documents
+- Highlight trends and anomalies found in the documents
+- Provide context for performance metrics based on document content
 
-Response Format:
-- Start with a direct answer to the question
-- Support with specific data from sources
-- Include relevant calculations or analysis
-- Note any limitations or assumptions
-- Suggest follow-up analysis if helpful
+Response Format for Document-Based Questions:
+- Start with a direct answer based on the uploaded documents
+- Quote specific data, figures, and sections from the documents
+- Include document names and page references when possible
+- Clearly distinguish between what's in the documents vs general knowledge
+- If data is not available in documents, explicitly state this limitation
 
-Always cite your sources and indicate confidence levels when making assessments."""
+Response Format for General Questions:
+- Clearly indicate when responding with general knowledge
+- Suggest specific document types that would contain the requested information
+- Recommend uploading relevant documents for more specific analysis
+
+Always be transparent about your information sources and limitations."""
 
     def _calculate_response_confidence(self, sources: List[DocumentSearchResult], response: str) -> float:
         """Calculate confidence score for the response"""
@@ -545,30 +591,45 @@ Always cite your sources and indicate confidence levels when making assessments.
         
         for source in agent_sources:
             # Create a mock DocumentSearchResult for compatibility
-            from ..models.document import DocumentMetadata, DocumentSearchResult
-            
+            from ..models.document import DocumentMetadata, DocumentSearchResult, ConfidenceLevel
+            from datetime import datetime
+            from ..models.document import DocumentType
+
+            confidence = source.get('confidence', 0.0)
+            # Map confidence score to ConfidenceLevel
+            if confidence >= 0.75:
+                confidence_level = ConfidenceLevel.HIGH
+            elif confidence >= 0.4:
+                confidence_level = ConfidenceLevel.MEDIUM
+            else:
+                confidence_level = ConfidenceLevel.LOW
+
             metadata = DocumentMetadata(
                 filename=source.get('filename', 'Unknown Document'),
-                document_type=source.get('document_type', 'unknown'),
+                file_size=source.get('file_size', 1000),  # Default size
+                file_type=source.get('file_type', '.txt'),  # Default type
+                document_type=DocumentType.OTHER if source.get('document_type', 'unknown') == 'unknown' else source.get('document_type', DocumentType.OTHER),
+                upload_timestamp=datetime.now(),  # Current timestamp as default
                 total_pages=1,
                 total_chunks=1,
                 has_financial_data=True,
-                confidence_score=source.get('confidence', 0.0)
+                confidence_score=confidence
             )
-            
+
             result = DocumentSearchResult(
                 chunk_id=f"agent_source_{hash(source.get('content', ''))}",
                 document_id=f"doc_{hash(source.get('filename', 'unknown'))}",
                 content=source.get('content', ''),
-                score=source.get('confidence', 0.0),
+                score=confidence,
+                confidence_level=confidence_level,
                 document_metadata=metadata,
                 chunk_metadata={
                     "page_number": 1,
                     "contains_financial_data": True,
-                    "confidence_score": source.get('confidence', 0.0)
+                    "confidence_score": confidence
                 }
             )
-            
+
             results.append(result)
         
         return results
