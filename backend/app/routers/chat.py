@@ -39,14 +39,61 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 async def get_chat_service(request: Request) -> ChatService:
-    """Dependency to get chat service"""
+    """Dependency to get chat service with auto-sync metadata"""
     ollama_service = request.app.state.ollama_service
     qdrant_service = request.app.state.qdrant_service
     chat_service = ChatService(ollama_service, qdrant_service)
 
+    # Get shared metadata store
+    shared_metadata_store = request.app.state.shared_metadata_store
+    
+    # Auto-sync: If metadata store is empty but Qdrant has data, reload metadata
+    if not shared_metadata_store:
+        try:
+            logger.info("Metadata cache empty, auto-syncing from Qdrant...")
+            all_points = await qdrant_service.get_all_points()
+            
+            if all_points:
+                from ..models.document import DocumentMetadata
+                from datetime import datetime
+                
+                document_chunks = {}
+                for point in all_points:
+                    payload = point.get("payload", {})
+                    doc_id = payload.get("document_id")
+                    if doc_id:
+                        if doc_id not in document_chunks:
+                            document_chunks[doc_id] = []
+                        document_chunks[doc_id].append(payload)
+                
+                # Reconstruct metadata
+                for doc_id, chunks in document_chunks.items():
+                    try:
+                        first_chunk = chunks[0]
+                        doc_metadata = DocumentMetadata(
+                            filename=first_chunk.get("filename", f"document_{doc_id[:8]}.txt"),
+                            file_size=first_chunk.get("file_size", 1000),
+                            file_type=first_chunk.get("file_type", ".txt"),
+                            document_type=first_chunk.get("document_type", "other"),
+                            upload_timestamp=first_chunk.get("upload_timestamp", datetime.now().isoformat()),
+                            total_pages=first_chunk.get("total_pages", 1),
+                            total_chunks=len(chunks),
+                            has_financial_data=first_chunk.get("has_financial_data", False),
+                            confidence_score=first_chunk.get("confidence_score", 0.5),
+                            tags=first_chunk.get("tags", []),
+                            custom_fields=first_chunk.get("custom_fields", {})
+                        )
+                        shared_metadata_store[doc_id] = doc_metadata
+                    except Exception as e:
+                        logger.error(f"Failed to auto-sync metadata for document {doc_id}: {e}")
+                        continue
+                
+                logger.info(f"Auto-synced {len(shared_metadata_store)} documents from Qdrant")
+        except Exception as e:
+            logger.error(f"Auto-sync failed: {e}")
+
     # Ensure all values in shared_metadata_store are DocumentMetadata objects
     from ..models.document import DocumentMetadata
-    shared_metadata_store = request.app.state.shared_metadata_store
     for k, v in list(shared_metadata_store.items()):
         if isinstance(v, dict):
             try:

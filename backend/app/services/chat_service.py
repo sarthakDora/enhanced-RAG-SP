@@ -108,7 +108,9 @@ class ChatService:
             if request.use_rag:
                 try:
                     # Check if we have any uploaded documents
+                    print(f"[DEBUG] (pre-check) document_metadata_cache: {self.document_metadata_cache}")
                     if not self.document_metadata_cache:
+                        print(f"[DEBUG] No documents found in metadata cache. Current cache: {self.document_metadata_cache}")
                         agent_response = {
                             "answer": "I don't have any documents uploaded to search through. Please upload relevant documents first before asking questions about specific data or reports.",
                             "confidence": 1.0,
@@ -118,11 +120,12 @@ class ChatService:
                             "agent_responses": [{"agent": "no_documents_guard", "success": True, "confidence": 1.0}]
                         }
                     else:
+                        print(f"[DEBUG] (post-check) document_metadata_cache: {self.document_metadata_cache}")
                         # Generate query embedding
                         logger.info(f"Generating embedding for query: '{request.message}'")
                         query_embedding = await self.ollama_service.generate_embedding(request.message)
                         logger.info(f"Generated embedding with {len(query_embedding)} dimensions")
-                        
+
                         # Create search request with stricter similarity threshold
                         from ..models.document import DocumentSearchRequest
                         search_request = DocumentSearchRequest(
@@ -133,28 +136,28 @@ class ChatService:
                             rerank_top_k=request.rerank_top_k or 3
                         )
                         logger.info(f"Search request: top_k={search_request.top_k}, threshold={search_request.similarity_threshold}")
-                        
+
                         # Search documents directly using the metadata cache
                         logger.info(f"Metadata cache has {len(self.document_metadata_cache)} documents")
                         logger.info(f"Available documents: {[meta.filename for meta in self.document_metadata_cache.values()]}")
-                        
+
                         search_results = await self.qdrant_service.search_similar_chunks(
                             query_embedding=query_embedding,
                             search_request=search_request,
                             document_metadata=self.document_metadata_cache
                         )
-                        
+
                         logger.info(f"Direct search found {len(search_results)} documents")
                         if search_results:
                             logger.info(f"Top result score: {search_results[0].score}, document: {search_results[0].document_metadata.filename if search_results[0].document_metadata else 'Unknown'}")
-                        
+
                         # Apply guardrails for document relevance
                         if not search_results or (search_results and search_results[0].score < 0.4):
                             # Check if query seems to be asking for specific data
                             data_keywords = ['top', 'contributors', 'performance', 'attribution', 'analysis', 
                                            'report', 'data', 'results', 'findings', 'summary', 'metrics',
                                            'statistics', 'numbers', 'figures', 'breakdown', 'details']
-                            
+
                             query_lower = request.message.lower()
                             asks_for_specific_data = any(keyword in query_lower for keyword in data_keywords)
                             
@@ -272,7 +275,9 @@ class ChatService:
             
             # Extract response components
             final_answer = agent_response.get("answer", "I couldn't process your request.")
-            sources = self._convert_agent_sources_to_document_results(agent_response.get("sources", []))
+            # Group sources by filename to avoid showing duplicate chunks from same file
+            grouped_sources = self._group_sources_by_file(agent_response.get("sources", []))
+            sources = self._convert_agent_sources_to_document_results(grouped_sources)
             context_documents = [
                 {
                     'filename': source.get('filename', 'Unknown Document'),
@@ -280,7 +285,7 @@ class ChatService:
                     'document_type': source.get('document_type'),
                     'confidence': source.get('confidence', 0.0)
                 }
-                for source in agent_response.get("sources", [])
+                for source in grouped_sources
             ]
             
             # Calculate search time from agent processing time
@@ -584,6 +589,30 @@ Always be transparent about your information sources and limitations."""
         )
         
         return min(0.95, max(0.1, combined_confidence))  # Clamp between 0.1 and 0.95
+
+    def _group_sources_by_file(self, agent_sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Group sources by filename, keeping only the highest scoring chunk per file"""
+        if not agent_sources:
+            return []
+        
+        # Group by filename
+        file_groups = {}
+        for source in agent_sources:
+            filename = source.get('filename', 'Unknown Document')
+            confidence = source.get('confidence', 0.0)
+            
+            # Keep only the highest confidence source per file
+            if filename not in file_groups or confidence > file_groups[filename]['confidence']:
+                # Create a summary content instead of showing individual chunks
+                file_groups[filename] = {
+                    'filename': filename,
+                    'content': f"Source: {filename}",  # Show just the filename instead of chunk content
+                    'document_type': source.get('document_type', 'unknown'),
+                    'confidence': confidence
+                }
+        
+        # Return list sorted by confidence (highest first)
+        return sorted(file_groups.values(), key=lambda x: x['confidence'], reverse=True)
 
     def _convert_agent_sources_to_document_results(self, agent_sources: List[Dict[str, Any]]) -> List[DocumentSearchResult]:
         """Convert agent orchestrator sources to DocumentSearchResult objects"""

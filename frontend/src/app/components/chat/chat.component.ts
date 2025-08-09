@@ -131,7 +131,8 @@ import { DocumentSearchResult } from '../../models/document.model';
                       <span class="source-title">{{ source.document_metadata.filename }}</span>
                       <span class="source-score">{{ (source.score * 100).toFixed(1) }}%</span>
                     </div>
-                    <p class="source-preview">{{ source.content.substring(0, 150) }}...</p>
+                    <p class="source-preview" *ngIf="!isSourceFileOnly(source.content)">{{ source.content.substring(0, 150) }}...</p>
+                    <p class="source-description" *ngIf="isSourceFileOnly(source.content)">Referenced document for this response</p>
                     <div class="source-meta">
                       <span *ngIf="source.page_number">Page {{ source.page_number }}</span>
                       <span>{{ source.document_metadata.document_type }}</span>
@@ -482,6 +483,13 @@ import { DocumentSearchResult } from '../../models/document.model';
       color: var(--text-secondary);
       margin: 8px 0;
       line-height: 1.4;
+    }
+
+    .source-description {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin: 8px 0;
+      font-style: italic;
     }
 
     .source-meta {
@@ -869,6 +877,11 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
       'other': 'description'
     };
     return iconMap[type] || 'description';
+  }
+
+  isSourceFileOnly(content: string): boolean {
+    // Check if the content is just indicating the source file (not actual chunk content)
+    return content.startsWith('Source:') || content.length < 50;
   }
 
   private scrollToBottom() {

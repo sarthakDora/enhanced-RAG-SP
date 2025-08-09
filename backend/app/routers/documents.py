@@ -320,36 +320,79 @@ async def get_document(document_id: str, request: Request):
 async def delete_document(document_id: str, request: Request):
     """Delete a document and its chunks"""
     try:
-        # Get shared store from app state
-        document_store = request.app.state.shared_document_store
-        
-        if document_id not in document_store:
-            raise HTTPException(status_code=404, detail="Document not found")
-        
-        # Delete from Qdrant
+        # Get services and stores from app state
         qdrant_service = request.app.state.qdrant_service
-        await qdrant_service.delete_document_chunks(document_id)
+        document_store = request.app.state.shared_document_store
+        metadata_store = request.app.state.shared_metadata_store
         
-        # Delete from shared memory store  
-        document = document_store.pop(document_id)
+        # Check if document exists in Qdrant or metadata store
+        all_points = await qdrant_service.get_all_points()
+        document_exists_in_qdrant = False
+        filename_for_file_deletion = None
+        file_id_for_file_deletion = None
+        
+        # Check Qdrant
+        for point in all_points:
+            payload = point.get("payload", {})
+            if payload.get("document_id") == document_id:
+                document_exists_in_qdrant = True
+                filename_for_file_deletion = payload.get("filename")
+                file_id_for_file_deletion = payload.get("custom_fields", {}).get("file_id")
+                break
+        
+        # Check metadata store
+        document_exists_in_metadata = document_id in metadata_store
+        
+        # Debug logging
+        logger.info(f"Delete debug - Document ID: {document_id}")
+        logger.info(f"Delete debug - Metadata store has {len(metadata_store)} entries")
+        logger.info(f"Delete debug - Metadata store keys: {list(metadata_store.keys())}")
+        logger.info(f"Delete debug - Document exists in Qdrant: {document_exists_in_qdrant}")
+        logger.info(f"Delete debug - Document exists in metadata: {document_exists_in_metadata}")
+        
+        if not document_exists_in_qdrant and not document_exists_in_metadata:
+            error_msg = f"Document not found. Qdrant: {document_exists_in_qdrant}, Metadata: {document_exists_in_metadata}, Metadata keys: {list(metadata_store.keys())}"
+            logger.error(error_msg)
+            raise HTTPException(status_code=404, detail=error_msg)
+        
+        # Get file info from metadata store if not found in Qdrant
+        if not filename_for_file_deletion and document_exists_in_metadata:
+            metadata = metadata_store[document_id]
+            filename_for_file_deletion = metadata.filename
+            file_id_for_file_deletion = getattr(metadata, 'custom_fields', {}).get('file_id')
+        
+        logger.info(f"Deleting document {document_id}: exists_in_qdrant={document_exists_in_qdrant}, exists_in_metadata={document_exists_in_metadata}")
+        
+        # Delete from Qdrant (this is the primary deletion)
+        await qdrant_service.delete_document_chunks(document_id)
+        logger.info(f"Deleted document chunks from Qdrant for document {document_id}")
+        
+        # Delete from memory stores (cleanup)
+        if document_id in document_store:
+            document_store.pop(document_id)
+            logger.info(f"Removed document {document_id} from document_store")
+            
+        if document_id in metadata_store:
+            metadata_store.pop(document_id)
+            logger.info(f"Removed document {document_id} from metadata_store")
         
         # Try to delete the uploaded file
         try:
-            # Simplify this part to avoid any Union type issues
-            file_id = getattr(document.metadata, 'custom_fields', {}).get('file_id')
-            if file_id:
-                file_path = os.path.join(settings.UPLOAD_DIR, f"{file_id}_{document.metadata.filename}")
+            if file_id_for_file_deletion and filename_for_file_deletion:
+                file_path = os.path.join(settings.UPLOAD_DIR, f"{file_id_for_file_deletion}_{filename_for_file_deletion}")
                 if os.path.exists(file_path):
                     os.remove(file_path)
-        except:
+                    logger.info(f"Deleted file: {file_path}")
+        except Exception as e:
+            logger.warning(f"Failed to delete file for document {document_id}: {e}")
             pass  # File deletion is not critical
         
-        # Return simple dict instead of JSONResponse to avoid typing issues
         return {"message": f"Document {document_id} deleted successfully"}
         
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Failed to delete document {document_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to delete document: {str(e)}")
 
 @router.get("/{document_id}/chunks/{chunk_id}", response_model=Dict[str, Any])
@@ -480,12 +523,46 @@ async def check_cache_status(request: Request):
             "memory_cache": {
                 "documents_count": len(document_store),
                 "metadata_count": len(metadata_store),
-                "document_ids": list(document_store.keys())
+                "document_ids": list(metadata_store.keys())  # Fixed: should show metadata_store keys
             },
             "qdrant": {
                 "total_points": len(qdrant_points),
                 "unique_documents": len(set(point.get("payload", {}).get("document_id") for point in qdrant_points if point.get("payload", {}).get("document_id")))
             }
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+@router.get("/debug/delete-check/{document_id}", response_model=Dict[str, Any])
+async def debug_delete_check(document_id: str, request: Request):
+    """Debug what the delete endpoint would see for a specific document"""
+    try:
+        document_store = request.app.state.shared_document_store
+        metadata_store = request.app.state.shared_metadata_store
+        qdrant_service = request.app.state.qdrant_service
+        
+        # Check Qdrant
+        all_points = await qdrant_service.get_all_points()
+        qdrant_document_ids = []
+        found_in_qdrant = False
+        
+        for point in all_points:
+            payload = point.get("payload", {})
+            point_doc_id = payload.get("document_id")
+            if point_doc_id:
+                qdrant_document_ids.append(point_doc_id)
+                if point_doc_id == document_id:
+                    found_in_qdrant = True
+        
+        return {
+            "target_document_id": document_id,
+            "found_in_qdrant": found_in_qdrant,
+            "found_in_metadata_store": document_id in metadata_store,
+            "found_in_document_store": document_id in document_store,
+            "metadata_store_count": len(metadata_store),
+            "metadata_store_keys": list(metadata_store.keys()),
+            "qdrant_document_ids": qdrant_document_ids,
+            "qdrant_total_points": len(all_points)
         }
     except Exception as e:
         return {"error": str(e)}

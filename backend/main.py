@@ -45,6 +45,62 @@ async def lifespan(app: FastAPI):
     app.state.shared_document_store = shared_document_store
     app.state.shared_metadata_store = shared_metadata_store
     
+    # Auto-load existing metadata from Qdrant on startup
+    try:
+        print("Loading existing documents from Qdrant...")
+        all_points = await qdrant_service.get_all_points()
+        
+        if all_points:
+            # Group chunks by document_id and reconstruct metadata
+            from app.models.document import DocumentMetadata
+            from datetime import datetime
+            import logging
+            
+            logger = logging.getLogger(__name__)
+            document_chunks = {}
+            
+            for point in all_points:
+                payload = point.get("payload", {})
+                doc_id = payload.get("document_id")
+                if doc_id:
+                    if doc_id not in document_chunks:
+                        document_chunks[doc_id] = []
+                    document_chunks[doc_id].append(payload)
+            
+            # Reconstruct metadata for each document
+            loaded_count = 0
+            for doc_id, chunks in document_chunks.items():
+                try:
+                    first_chunk = chunks[0]
+                    
+                    doc_metadata = DocumentMetadata(
+                        filename=first_chunk.get("filename", f"document_{doc_id[:8]}.txt"),
+                        file_size=first_chunk.get("file_size", 1000),
+                        file_type=first_chunk.get("file_type", ".txt"),
+                        document_type=first_chunk.get("document_type", "other"),
+                        upload_timestamp=first_chunk.get("upload_timestamp", datetime.now().isoformat()),
+                        total_pages=first_chunk.get("total_pages", 1),
+                        total_chunks=len(chunks),
+                        has_financial_data=first_chunk.get("has_financial_data", False),
+                        confidence_score=first_chunk.get("confidence_score", 0.5),
+                        tags=first_chunk.get("tags", []),
+                        custom_fields=first_chunk.get("custom_fields", {})
+                    )
+                    
+                    shared_metadata_store[doc_id] = doc_metadata
+                    loaded_count += 1
+                    
+                except Exception as e:
+                    logger.error(f"Failed to load metadata for document {doc_id}: {e}")
+                    continue
+            
+            print(f"Loaded {loaded_count} documents from Qdrant into memory cache")
+        else:
+            print("No existing documents found in Qdrant")
+            
+    except Exception as e:
+        print(f"Failed to load existing documents from Qdrant: {e}")
+    
     yield
     
     # Shutdown
