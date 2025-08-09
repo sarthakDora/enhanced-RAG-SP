@@ -89,7 +89,7 @@ async def upload_documents(
                 
                 # Store in Qdrant
                 qdrant_service = request.app.state.qdrant_service
-                await qdrant_service.store_chunks(document.chunks)
+                await qdrant_service.store_chunks(document.chunks, document.metadata)
                 
                 # Store in shared memory store (use database in production)
 
@@ -192,23 +192,49 @@ async def search_documents(
 
 @router.get("/list", response_model=Dict[str, Any])
 async def list_documents(request: Request):
-    """List all uploaded documents"""
+    """List all uploaded documents - fetch fresh data from Qdrant"""
     try:
-        # Get shared document store
-        document_store = request.app.state.shared_document_store
+        # Get services
+        qdrant_service = request.app.state.qdrant_service
+        
+        # Get all points from Qdrant collection
+        all_points = await qdrant_service.get_all_points()
+        
+        if not all_points:
+            return {
+                "documents": [],
+                "total_count": 0
+            }
+        
+        # Group chunks by document_id and build document metadata
+        document_chunks = {}
+        for point in all_points:
+            payload = point.get("payload", {})
+            doc_id = payload.get("document_id")
+            if doc_id:
+                if doc_id not in document_chunks:
+                    document_chunks[doc_id] = []
+                document_chunks[doc_id].append(payload)
+        
+        # Build documents list from Qdrant data
         documents = []
-        for doc_id, document in document_store.items():
-            metadata = document.metadata
+        for doc_id, chunks in document_chunks.items():
+            if not chunks:
+                continue
+                
+            # Get metadata from the first chunk
+            first_chunk = chunks[0]
+            
             documents.append({
                 "document_id": doc_id,
-                "filename": metadata.filename,
-                "document_type": metadata.document_type,
-                "upload_timestamp": metadata.upload_timestamp,
-                "total_pages": metadata.total_pages,
-                "total_chunks": metadata.total_chunks,
-                "has_financial_data": metadata.has_financial_data,
-                "confidence_score": metadata.confidence_score,
-                "tags": metadata.tags
+                "filename": first_chunk.get("filename", f"document_{doc_id[:8]}.txt"),
+                "document_type": first_chunk.get("document_type", "other"),
+                "upload_timestamp": first_chunk.get("upload_timestamp", datetime.now().isoformat()),
+                "total_pages": first_chunk.get("total_pages", 1),
+                "total_chunks": len(chunks),  # Actual count from Qdrant
+                "has_financial_data": first_chunk.get("has_financial_data", False),
+                "confidence_score": first_chunk.get("confidence_score", 0.5),
+                "tags": first_chunk.get("tags", [])
             })
         
         # Sort by upload time (newest first)
@@ -220,38 +246,74 @@ async def list_documents(request: Request):
         }
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list documents: {str(e)}")
+        logger.error(f"Failed to list documents from Qdrant: {e}")
+        # Fallback to empty list instead of memory store
+        return {
+            "documents": [],
+            "total_count": 0
+        }
 
 @router.get("/{document_id}", response_model=Dict[str, Any])
 async def get_document(document_id: str, request: Request):
-    """Get document details"""
+    """Get document details - fetch fresh data from Qdrant"""
     try:
-        document_store = request.app.state.shared_document_store
-        if document_id not in document_store:
-            raise HTTPException(status_code=404, detail="Document not found")
+        # Get services
+        qdrant_service = request.app.state.qdrant_service
         
-        document = document_store[document_id]
+        # Get all points from Qdrant collection
+        all_points = await qdrant_service.get_all_points()
+        
+        # Find chunks for this document
+        document_chunks = []
+        for point in all_points:
+            payload = point.get("payload", {})
+            if payload.get("document_id") == document_id:
+                document_chunks.append({
+                    "chunk_id": point.get("id"),
+                    "content": payload.get("content", "")[:200] + "..." if len(payload.get("content", "")) > 200 else payload.get("content", ""),
+                    "chunk_type": payload.get("chunk_type", "text"),
+                    "page_number": payload.get("page_number", 1),
+                    "contains_financial_data": payload.get("contains_financial_data", False),
+                    "confidence_score": payload.get("confidence_score", 0.5),
+                    "full_content": payload.get("content", "")
+                })
+        
+        if not document_chunks:
+            raise HTTPException(status_code=404, detail="Document not found in Qdrant")
+        
+        # Get metadata from the first chunk
+        first_chunk_payload = None
+        for point in all_points:
+            payload = point.get("payload", {})
+            if payload.get("document_id") == document_id:
+                first_chunk_payload = payload
+                break
+        
+        if not first_chunk_payload:
+            raise HTTPException(status_code=404, detail="Document metadata not found")
+        
+        metadata = {
+            "filename": first_chunk_payload.get("filename", f"document_{document_id[:8]}.txt"),
+            "document_type": first_chunk_payload.get("document_type", "other"),
+            "upload_timestamp": first_chunk_payload.get("upload_timestamp", datetime.now().isoformat()),
+            "total_pages": first_chunk_payload.get("total_pages", 1),
+            "total_chunks": len(document_chunks),
+            "has_financial_data": first_chunk_payload.get("has_financial_data", False),
+            "confidence_score": first_chunk_payload.get("confidence_score", 0.5),
+            "tags": first_chunk_payload.get("tags", [])
+        }
         
         return {
             "document_id": document_id,
-            "metadata": document.metadata.dict(),
-            "chunks": [
-                {
-                    "chunk_id": chunk.chunk_id,
-                    "content": chunk.content[:200] + "..." if len(chunk.content) > 200 else chunk.content,
-                    "chunk_type": chunk.chunk_type,
-                    "page_number": chunk.page_number,
-                    "contains_financial_data": chunk.contains_financial_data,
-                    "confidence_score": chunk.confidence_score
-                }
-                for chunk in document.chunks
-            ],
-            "processing_status": document.processing_status
+            "metadata": metadata,
+            "chunks": document_chunks,
+            "processing_status": "processed"  # Assume processed if in Qdrant
         }
         
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Failed to get document {document_id} from Qdrant: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get document: {str(e)}")
 
 @router.delete("/{document_id}")
@@ -314,23 +376,54 @@ async def get_chunk(document_id: str, chunk_id: str, request: Request):
 
 @router.get("/stats/overview", response_model=Dict[str, Any])
 async def get_document_stats(request: Request):
-    """Get document collection statistics"""
+    """Get document collection statistics - fetch fresh data from Qdrant"""
     try:
-        document_store = request.app.state.shared_document_store
-        total_docs = len(document_store)
-        total_chunks = sum(doc.metadata.total_chunks for doc in document_store.values())
+        # Get services
+        qdrant_service = request.app.state.qdrant_service
         
-        # Document type breakdown
+        # Get all points from Qdrant collection
+        all_points = await qdrant_service.get_all_points()
+        
+        if not all_points:
+            return {
+                "total_documents": 0,
+                "total_chunks": 0,
+                "documents_with_financial_data": 0,
+                "document_types": {},
+                "average_chunks_per_document": 0
+            }
+        
+        # Group chunks by document_id and analyze
+        document_chunks = {}
         type_counts = {}
-        for doc in document_store.values():
-            doc_type = doc.metadata.document_type
-            type_counts[doc_type] = type_counts.get(doc_type, 0) + 1
+        docs_with_financial_data = 0
         
-        # Financial data stats
-        docs_with_financial_data = sum(
-            1 for doc in document_store.values() 
-            if doc.metadata.has_financial_data
-        )
+        for point in all_points:
+            payload = point.get("payload", {})
+            doc_id = payload.get("document_id")
+            if doc_id:
+                if doc_id not in document_chunks:
+                    document_chunks[doc_id] = []
+                document_chunks[doc_id].append(payload)
+        
+        # Analyze documents
+        for doc_id, chunks in document_chunks.items():
+            if not chunks:
+                continue
+                
+            # Get metadata from the first chunk
+            first_chunk = chunks[0]
+            
+            # Document type breakdown
+            doc_type = first_chunk.get("document_type", "other")
+            type_counts[doc_type] = type_counts.get(doc_type, 0) + 1
+            
+            # Financial data stats
+            if first_chunk.get("has_financial_data", False):
+                docs_with_financial_data += 1
+        
+        total_docs = len(document_chunks)
+        total_chunks = len(all_points)
         
         return {
             "total_documents": total_docs,
@@ -341,7 +434,61 @@ async def get_document_stats(request: Request):
         }
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get stats: {str(e)}")
+        logger.error(f"Failed to get stats from Qdrant: {e}")
+        # Fallback to empty stats
+        return {
+            "total_documents": 0,
+            "total_chunks": 0,
+            "documents_with_financial_data": 0,
+            "document_types": {},
+            "average_chunks_per_document": 0
+        }
+
+@router.get("/debug/clear-cache", response_model=Dict[str, Any])
+async def clear_memory_cache(request: Request):
+    """Clear in-memory document and metadata stores"""
+    try:
+        document_store = request.app.state.shared_document_store
+        metadata_store = request.app.state.shared_metadata_store
+        
+        doc_count = len(document_store)
+        meta_count = len(metadata_store)
+        
+        document_store.clear()
+        metadata_store.clear()
+        
+        return {
+            "message": "Memory cache cleared successfully",
+            "documents_cleared": doc_count,
+            "metadata_cleared": meta_count
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to clear cache: {str(e)}")
+
+@router.get("/debug/cache-status", response_model=Dict[str, Any])
+async def check_cache_status(request: Request):
+    """Check what's in memory cache vs Qdrant"""
+    try:
+        document_store = request.app.state.shared_document_store
+        metadata_store = request.app.state.shared_metadata_store
+        qdrant_service = request.app.state.qdrant_service
+        
+        # Get Qdrant data
+        qdrant_points = await qdrant_service.get_all_points()
+        
+        return {
+            "memory_cache": {
+                "documents_count": len(document_store),
+                "metadata_count": len(metadata_store),
+                "document_ids": list(document_store.keys())
+            },
+            "qdrant": {
+                "total_points": len(qdrant_points),
+                "unique_documents": len(set(point.get("payload", {}).get("document_id") for point in qdrant_points if point.get("payload", {}).get("document_id")))
+            }
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 @router.post("/reload-metadata", response_model=Dict[str, Any])
 async def reload_metadata_from_qdrant(request: Request):

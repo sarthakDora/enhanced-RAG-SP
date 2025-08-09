@@ -1,11 +1,12 @@
-import { Component } from '@angular/core';
+import { Component, OnInit, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { RouterOutlet, RouterModule } from '@angular/router';
+import { RouterOutlet, RouterModule, Router, NavigationEnd } from '@angular/router';
 import { MatToolbarModule } from '@angular/material/toolbar';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatSidenavModule } from '@angular/material/sidenav';
 import { ApiService } from './services/api.service';
+import { Subscription, filter } from 'rxjs';
 
 @Component({
   selector: 'app-root',
@@ -48,6 +49,9 @@ import { ApiService } from './services/api.service';
                  class="nav-item glass-button">
                 <mat-icon>description</mat-icon>
                 <span>Documents</span>
+                <div *ngIf="hasDocumentUpdates" class="update-indicator" title="New documents available">
+                  <mat-icon>fiber_new</mat-icon>
+                </div>
               </a>
               
               <a routerLink="/analytics" 
@@ -166,6 +170,37 @@ import { ApiService } from './services/api.service';
       border-color: rgba(255, 255, 255, 0.3);
     }
 
+    .update-indicator {
+      margin-left: auto;
+      background: #f44336;
+      border-radius: 50%;
+      width: 20px;
+      height: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      animation: pulse 2s infinite;
+    }
+
+    .update-indicator mat-icon {
+      font-size: 12px;
+      width: 12px;
+      height: 12px;
+      color: white;
+    }
+
+    @keyframes pulse {
+      0% {
+        box-shadow: 0 0 0 0 rgba(244, 67, 54, 0.7);
+      }
+      70% {
+        box-shadow: 0 0 0 10px rgba(244, 67, 54, 0);
+      }
+      100% {
+        box-shadow: 0 0 0 0 rgba(244, 67, 54, 0);
+      }
+    }
+
     .toolbar {
       position: sticky;
       top: 0;
@@ -232,13 +267,37 @@ import { ApiService } from './services/api.service';
     }
   `]
 })
-export class AppComponent {
+export class AppComponent implements OnInit, OnDestroy {
   title = 'Enhanced RAG System';
   isConnected = true;
+  hasDocumentUpdates = false;
+  private subscriptions: Subscription[] = [];
 
-  constructor(private apiService: ApiService) {
+  constructor(private apiService: ApiService, private router: Router) {
     // You can add connection status monitoring here
     this.checkConnectionStatus();
+  }
+
+  ngOnInit() {
+    // Subscribe to document updates
+    const docUpdateSub = this.apiService.documentsUpdated$.subscribe(() => {
+      this.hasDocumentUpdates = true;
+    });
+    this.subscriptions.push(docUpdateSub);
+
+    // Clear the update indicator when navigating to documents page
+    const routerSub = this.router.events.pipe(
+      filter((event): event is NavigationEnd => event instanceof NavigationEnd)
+    ).subscribe((event) => {
+      if (event.urlAfterRedirects === '/documents') {
+        this.hasDocumentUpdates = false;
+      }
+    });
+    this.subscriptions.push(routerSub);
+  }
+
+  ngOnDestroy() {
+    this.subscriptions.forEach(sub => sub.unsubscribe());
   }
 
   private checkConnectionStatus() {

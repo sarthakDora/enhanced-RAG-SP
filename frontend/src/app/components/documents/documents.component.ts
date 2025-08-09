@@ -697,6 +697,12 @@ export class DocumentsComponent implements OnInit, OnDestroy {
   ngOnInit() {
     this.loadDocuments();
     this.loadStats();
+    
+    // Subscribe to documents updates
+    const docUpdateSub = this.apiService.documentsUpdated$.subscribe(() => {
+      this.refreshDocuments();
+    });
+    this.subscriptions.push(docUpdateSub);
   }
 
   ngOnDestroy() {

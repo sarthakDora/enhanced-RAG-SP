@@ -1,6 +1,7 @@
 import { Injectable } from '@angular/core';
 import { HttpClient, HttpHeaders, HttpParams } from '@angular/common/http';
 import { Observable, BehaviorSubject } from 'rxjs';
+import { tap } from 'rxjs/operators';
 import { environment } from '../../environments/environment';
 
 @Injectable({
@@ -9,6 +10,7 @@ import { environment } from '../../environments/environment';
 export class ApiService {
   private baseUrl = environment.apiUrl || 'http://localhost:8000/api';
   private connectionStatus = new BehaviorSubject<boolean>(true);
+  private documentsUpdated = new BehaviorSubject<boolean>(false);
 
   constructor(private http: HttpClient) {
     this.checkHealth();
@@ -16,6 +18,14 @@ export class ApiService {
 
   get connectionStatus$() {
     return this.connectionStatus.asObservable();
+  }
+
+  get documentsUpdated$() {
+    return this.documentsUpdated.asObservable();
+  }
+
+  notifyDocumentsUpdated() {
+    this.documentsUpdated.next(true);
   }
 
   private getHeaders(): HttpHeaders {
@@ -42,7 +52,9 @@ export class ApiService {
       formData.append('tags', tags);
     }
 
-    return this.http.post(`${this.baseUrl}/documents/upload`, formData);
+    return this.http.post(`${this.baseUrl}/documents/upload`, formData).pipe(
+      tap(() => this.notifyDocumentsUpdated())
+    );
   }
 
   searchDocuments(searchRequest: any): Observable<any> {
@@ -60,7 +72,9 @@ export class ApiService {
   }
 
   deleteDocument(documentId: string): Observable<any> {
-    return this.http.delete(`${this.baseUrl}/documents/${documentId}`);
+    return this.http.delete(`${this.baseUrl}/documents/${documentId}`).pipe(
+      tap(() => this.notifyDocumentsUpdated())
+    );
   }
 
   getDocumentStats(): Observable<any> {

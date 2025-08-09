@@ -57,7 +57,7 @@ class QdrantService:
             logger.error(f"Failed to create collection: {e}")
             raise
 
-    async def store_chunks(self, chunks: List[DocumentChunk]) -> bool:
+    async def store_chunks(self, chunks: List[DocumentChunk], document_metadata: 'DocumentMetadata' = None) -> bool:
         """Store document chunks in Qdrant"""
         try:
             # Ensure collection exists
@@ -75,11 +75,25 @@ class QdrantService:
                     logger.error(f"Invalid embedding format for chunk {chunk.chunk_id}: {type(chunk.embedding)}")
                     continue
                 
-                # Use minimal payload first to test basic insertion
+                # Store complete metadata in payload for proper document listing
                 payload = {
                     "document_id": str(chunk.document_id),
-                    "content": str(chunk.content)[:1000],  # Truncate to avoid large payloads
-                    "chunk_index": int(chunk.chunk_index)
+                    "content": str(chunk.content),
+                    "chunk_index": int(chunk.chunk_index),
+                    "chunk_type": str(chunk.chunk_type) if chunk.chunk_type else "text",
+                    "page_number": int(chunk.page_number) if chunk.page_number else 1,
+                    "contains_financial_data": bool(chunk.contains_financial_data),
+                    "confidence_score": float(chunk.confidence_score) if chunk.confidence_score else 0.5,
+                    "section_title": str(chunk.section_title) if chunk.section_title else "",
+                    "subsection_title": str(chunk.subsection_title) if chunk.subsection_title else "",
+                    "financial_keywords": chunk.financial_keywords if chunk.financial_keywords else [],
+                    # Add document metadata to each chunk for easier querying
+                    "filename": document_metadata.filename if document_metadata else f"document_{str(chunk.document_id)[:8]}.txt",
+                    "document_type": document_metadata.document_type if document_metadata else "other",
+                    "upload_timestamp": document_metadata.upload_timestamp.isoformat() if document_metadata and hasattr(document_metadata, 'upload_timestamp') else datetime.now().isoformat(),
+                    "total_pages": document_metadata.total_pages if document_metadata else 1,
+                    "has_financial_data": document_metadata.has_financial_data if document_metadata else False,
+                    "tags": document_metadata.tags if document_metadata else []
                 }
                 
                 # Ensure chunk_id is converted to proper format for Qdrant
@@ -160,6 +174,10 @@ class QdrantService:
     ) -> List[DocumentSearchResult]:
         """Search for similar chunks with advanced filtering"""
         try:
+            # Check if collection exists first
+            if not await self.collection_exists():
+                logger.info(f"Collection {self.collection_name} does not exist, returning empty results")
+                return []
             # Build filters
             filter_conditions = []
             
@@ -280,6 +298,11 @@ class QdrantService:
     async def get_chunk_by_id(self, chunk_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve a specific chunk by ID"""
         try:
+            # Check if collection exists first
+            if not await self.collection_exists():
+                logger.info(f"Collection {self.collection_name} does not exist, returning None")
+                return None
+                
             result = self.client.retrieve(
                 collection_name=self.collection_name,
                 ids=[chunk_id],
@@ -301,6 +324,10 @@ class QdrantService:
     async def delete_document_chunks(self, document_id: str) -> bool:
         """Delete all chunks for a specific document"""
         try:
+            # Check if collection exists first
+            if not await self.collection_exists():
+                logger.info(f"Collection {self.collection_name} does not exist, nothing to delete")
+                return True  # Consider it successful since there's nothing to delete
             # Use REST API directly to avoid typing issues
             filter_data = {
                 "filter": {
@@ -334,6 +361,20 @@ class QdrantService:
     async def get_collection_stats(self) -> Dict[str, Any]:
         """Get collection statistics"""
         try:
+            # Check if collection exists first
+            if not await self.collection_exists():
+                logger.info(f"Collection {self.collection_name} does not exist, returning zero stats")
+                return {
+                    "total_points": 0,
+                    "indexed_points": 0,
+                    "status": "not_exists",
+                    "optimizer_status": "not_exists",
+                    "vectors_config": {
+                        "size": 0,
+                        "distance": "cosine"
+                    }
+                }
+                
             info = self.client.get_collection(self.collection_name)
             return {
                 "total_points": info.points_count,
@@ -347,11 +388,36 @@ class QdrantService:
             }
         except Exception as e:
             logger.error(f"Failed to get collection stats: {e}")
-            raise
+            # Return empty stats instead of raising
+            return {
+                "total_points": 0,
+                "indexed_points": 0,
+                "status": "error",
+                "optimizer_status": "error",
+                "vectors_config": {
+                    "size": 0,
+                    "distance": "cosine"
+                }
+            }
+
+    async def collection_exists(self) -> bool:
+        """Check if the collection exists"""
+        try:
+            collections = self.client.get_collections()
+            collection_names = [col.name for col in collections.collections]
+            return self.collection_name in collection_names
+        except Exception as e:
+            logger.error(f"Failed to check collection existence: {e}")
+            return False
 
     async def get_all_points(self) -> List[Dict[str, Any]]:
         """Get all points from the collection"""
         try:
+            # Check if collection exists first
+            if not await self.collection_exists():
+                logger.info(f"Collection {self.collection_name} does not exist, returning empty list")
+                return []
+            
             # Scroll through all points in the collection
             points = []
             offset = None
