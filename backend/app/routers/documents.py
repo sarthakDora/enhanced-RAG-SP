@@ -16,6 +16,7 @@ from ..models.document import (
 )
 from ..services.document_processor import FinancialDocumentProcessor
 from ..services.reranking_service import MultiStrategyReranker
+from ..services.performance_attribution_service import PerformanceAttributionService
 from ..core.config import settings
 
 router = APIRouter()
@@ -30,7 +31,7 @@ async def get_document_processor(request: Request) -> FinancialDocumentProcessor
 @router.post("/upload", response_model=Dict[str, Any])
 async def upload_documents(
     request: Request,
-    files: List[UploadFile] = File(...),
+    files: List[UploadFile] = File(..., description="Upload files (max 1GB each)"),
     document_type: DocumentType = Form(DocumentType.OTHER),
     tags: Optional[str] = Form(None),
     processor: FinancialDocumentProcessor = Depends(get_document_processor)
@@ -57,9 +58,11 @@ async def upload_documents(
             file.file.seek(0)  # Reset to beginning
             
             if file_size > settings.MAX_FILE_SIZE:
+                max_size_mb = settings.MAX_FILE_SIZE / (1024 * 1024)
+                current_size_mb = file_size / (1024 * 1024)
                 raise HTTPException(
                     status_code=400,
-                    detail=f"File {file.filename} too large. Max size: {settings.MAX_FILE_SIZE} bytes"
+                    detail=f"File '{file.filename}' is too large ({current_size_mb:.1f}MB). Maximum allowed size is {max_size_mb:.0f}MB"
                 )
             
             # Save file
@@ -83,24 +86,36 @@ async def upload_documents(
                 }
                 
                 # Process the document
+                print(f"DEBUG: About to process document: {file_path}")
                 document = await processor.process_document(
                     file_path, document_type, additional_metadata
                 )
+                print(f"DEBUG: Document processed, chunks: {len(document.chunks)}")
                 
                 # Store in Qdrant
-                qdrant_service = request.app.state.qdrant_service
-                await qdrant_service.store_chunks(document.chunks, document.metadata)
+                print(f"DEBUG: About to store {len(document.chunks)} chunks in Qdrant")
+                print(f"DEBUG: Document metadata type: {type(document.metadata)}")
+                if document.chunks:
+                    first_chunk = document.chunks[0]
+                    print(f"DEBUG: First chunk ID: {first_chunk.chunk_id}")
+                    print(f"DEBUG: First chunk has embedding: {first_chunk.embedding is not None}")
+                    if first_chunk.embedding:
+                        print(f"DEBUG: First chunk embedding length: {len(first_chunk.embedding)}")
+                        print(f"DEBUG: First chunk embedding type: {type(first_chunk.embedding)}")
+                        if len(first_chunk.embedding) > 0:
+                            print(f"DEBUG: First few embedding values: {first_chunk.embedding[:3]}")
                 
-                # Store in shared memory store (use database in production)
-
-                document_store = request.app.state.shared_document_store
-                metadata_store = request.app.state.shared_metadata_store
-                document_store[document.document_id] = document
-                # Ensure only DocumentMetadata objects are stored
-                meta = document.metadata
-                if isinstance(meta, dict):
-                    meta = DocumentMetadata(**meta)
-                metadata_store[document.document_id] = meta
+                qdrant_service = request.app.state.qdrant_service
+                try:
+                    await qdrant_service.store_chunks(document.chunks, document.metadata)
+                    print(f"DEBUG: Chunks stored successfully")
+                except Exception as storage_error:
+                    print(f"DEBUG: Storage failed: {type(storage_error).__name__}: {str(storage_error)}")
+                    import traceback
+                    print(f"DEBUG: Full traceback: {traceback.format_exc()}")
+                    raise  # Re-raise to maintain the original behavior
+                
+                # Documents are now stored only in Qdrant - no memory storage
 
                 uploaded_docs.append({
                     "document_id": document.document_id,
@@ -197,13 +212,49 @@ async def list_documents(request: Request):
         # Get services
         qdrant_service = request.app.state.qdrant_service
         
-        # Get all points from Qdrant collection
+        logger.info(f"Fetching documents from collection: {qdrant_service.collection_name}")
+        
+        # Check if any collection exists (main or category collections)
+        main_collection_exists = await qdrant_service.collection_exists()
+        
+        # Check category collections
+        category_collections_exist = []
+        for category_name, collection_name in qdrant_service.category_collections.items():
+            exists = await qdrant_service.collection_exists(collection_name)
+            if exists:
+                category_collections_exist.append(collection_name)
+        
+        logger.info(f"Main collection exists: {main_collection_exists}")
+        logger.info(f"Category collections exist: {category_collections_exist}")
+        
+        # If no collections exist, return empty
+        if not main_collection_exists and not category_collections_exist:
+            return {
+                "documents": [],
+                "total_count": 0,
+                "debug_info": {
+                    "collection_name": qdrant_service.collection_name,
+                    "collection_exists": False,
+                    "category_collections": category_collections_exist,
+                    "error": "No collections exist in Qdrant"
+                }
+            }
+        
+        # Get all points from Qdrant collection and category collections
         all_points = await qdrant_service.get_all_points()
+        logger.info(f"Found {len(all_points) if all_points else 0} total points across all collections")
         
         if not all_points:
             return {
                 "documents": [],
-                "total_count": 0
+                "total_count": 0,
+                "debug_info": {
+                    "collection_name": qdrant_service.collection_name,
+                    "collection_exists": collection_exists,
+                    "points_found": 0,
+                    "error": "No points found in any collection",
+                    "collections_checked": [qdrant_service.collection_name] + list(qdrant_service.category_collections.values())
+                }
             }
         
         # Group chunks by document_id and build document metadata
@@ -240,18 +291,136 @@ async def list_documents(request: Request):
         # Sort by upload time (newest first)
         documents.sort(key=lambda x: x["upload_timestamp"], reverse=True)
         
+        logger.info(f"Successfully found {len(documents)} documents")
+        
         return {
             "documents": documents,
-            "total_count": len(documents)
+            "total_count": len(documents),
+            "debug_info": {
+                "collection_name": qdrant_service.collection_name,
+                "main_collection_exists": main_collection_exists,
+                "category_collections_exist": category_collections_exist,
+                "points_found": len(all_points),
+                "documents_processed": len(documents),
+                "status": "success"
+            }
         }
         
     except Exception as e:
         logger.error(f"Failed to list documents from Qdrant: {e}")
-        # Fallback to empty list instead of memory store
+        # Return error details for debugging
         return {
             "documents": [],
-            "total_count": 0
+            "total_count": 0,
+            "debug_info": {
+                "collection_name": getattr(request.app.state, 'qdrant_service', {}).collection_name if hasattr(request.app.state, 'qdrant_service') else "unknown",
+                "collection_exists": False,
+                "error": str(e),
+                "status": "error"
+            }
         }
+
+@router.post("/generate-commentary/{document_id}", response_model=Dict[str, Any])
+async def generate_attribution_commentary(document_id: str, request: Request):
+    """Generate performance attribution commentary for a performance attribution document"""
+    try:
+        # Get services
+        qdrant_service = request.app.state.qdrant_service
+        ollama_service = request.app.state.ollama_service
+        document_store = request.app.state.shared_document_store
+        performance_service = PerformanceAttributionService()
+        
+        # Get document metadata directly from Qdrant
+        all_points = await qdrant_service.get_all_points()
+        document_metadata = None
+        for point in all_points:
+            payload = point.get("payload", {})
+            if payload.get("document_id") == document_id:
+                document_metadata = {
+                    "document_id": document_id,
+                    "filename": payload.get("filename", "unknown"),
+                    "document_type": payload.get("document_type", "other")
+                }
+                break
+        
+        if not document_metadata:
+            raise HTTPException(status_code=404, detail="Document not found in Qdrant")
+        
+        if document_metadata["document_type"] != "performance_attribution":
+            raise HTTPException(
+                status_code=400, 
+                detail="Document must be a performance attribution document"
+            )
+        
+        # Get all points for this document from Qdrant
+        all_points = await qdrant_service.get_all_points()
+        document_chunks = []
+        for point in all_points:
+            payload = point.get("payload", {})
+            if payload.get("document_id") == document_id:
+                document_chunks.append(payload)
+        
+        if not document_chunks:
+            raise HTTPException(status_code=404, detail="Document chunks not found in Qdrant")
+        
+        # Reconstruct table data from chunks
+        tables_data = []
+        for chunk in document_chunks:
+            if chunk.get("chunk_type") == "table" and "table_data" in chunk:
+                tables_data.append(chunk["table_data"])
+        
+        # If no table data in chunks, try to get from original document
+        if not tables_data and hasattr(document, 'content_data') and document.content_data.get('tables'):
+            tables_data = document.content_data['tables']
+        
+        if not tables_data:
+            return {
+                "success": False,
+                "error": "No table data found for performance attribution analysis",
+                "document_id": document_id
+            }
+        
+        # Extract attribution data
+        attribution_data = performance_service.extract_attribution_data_from_tables(tables_data)
+        if not attribution_data:
+            return {
+                "success": False,
+                "error": "No attribution data could be extracted from tables",
+                "document_id": document_id
+            }
+        
+        # Parse the attribution data
+        parsed_data = performance_service.parse_attribution_table(attribution_data)
+        if not parsed_data:
+            return {
+                "success": False,
+                "error": "Could not parse attribution table data",
+                "document_id": document_id
+            }
+        
+        # Generate commentary
+        commentary = await performance_service.generate_commentary(parsed_data, ollama_service)
+        
+        return {
+            "success": True,
+            "document_id": document_id,
+            "filename": document_metadata["filename"],
+            "commentary": commentary,
+            "attribution_data": {
+                "period": parsed_data.get("period_name"),
+                "portfolio_return": parsed_data.get("portfolio_total_return"),
+                "benchmark_return": parsed_data.get("benchmark_total_return"),
+                "active_return": parsed_data.get("total_active_return"),
+                "top_contributors": len(parsed_data.get("top_contributors", [])),
+                "top_detractors": len(parsed_data.get("top_detractors", []))
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to generate commentary for document {document_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate commentary: {str(e)}")
 
 @router.get("/{document_id}", response_model=Dict[str, Any])
 async def get_document(document_id: str, request: Request):
@@ -320,14 +489,12 @@ async def get_document(document_id: str, request: Request):
 async def delete_document(document_id: str, request: Request):
     """Delete a document and its chunks"""
     try:
-        # Get services and stores from app state
+        # Get services from app state  
         qdrant_service = request.app.state.qdrant_service
-        document_store = request.app.state.shared_document_store
-        metadata_store = request.app.state.shared_metadata_store
         
-        # Check if document exists in Qdrant or metadata store
+        # Check if document exists in Qdrant
         all_points = await qdrant_service.get_all_points()
-        document_exists_in_qdrant = False
+        document_found = False
         filename_for_file_deletion = None
         file_id_for_file_deletion = None
         
@@ -335,46 +502,19 @@ async def delete_document(document_id: str, request: Request):
         for point in all_points:
             payload = point.get("payload", {})
             if payload.get("document_id") == document_id:
-                document_exists_in_qdrant = True
+                document_found = True
                 filename_for_file_deletion = payload.get("filename")
                 file_id_for_file_deletion = payload.get("custom_fields", {}).get("file_id")
                 break
         
-        # Check metadata store
-        document_exists_in_metadata = document_id in metadata_store
+        if not document_found:
+            raise HTTPException(status_code=404, detail="Document not found")
         
-        # Debug logging
-        logger.info(f"Delete debug - Document ID: {document_id}")
-        logger.info(f"Delete debug - Metadata store has {len(metadata_store)} entries")
-        logger.info(f"Delete debug - Metadata store keys: {list(metadata_store.keys())}")
-        logger.info(f"Delete debug - Document exists in Qdrant: {document_exists_in_qdrant}")
-        logger.info(f"Delete debug - Document exists in metadata: {document_exists_in_metadata}")
+        logger.info(f"Deleting document {document_id}")
         
-        if not document_exists_in_qdrant and not document_exists_in_metadata:
-            error_msg = f"Document not found. Qdrant: {document_exists_in_qdrant}, Metadata: {document_exists_in_metadata}, Metadata keys: {list(metadata_store.keys())}"
-            logger.error(error_msg)
-            raise HTTPException(status_code=404, detail=error_msg)
-        
-        # Get file info from metadata store if not found in Qdrant
-        if not filename_for_file_deletion and document_exists_in_metadata:
-            metadata = metadata_store[document_id]
-            filename_for_file_deletion = metadata.filename
-            file_id_for_file_deletion = getattr(metadata, 'custom_fields', {}).get('file_id')
-        
-        logger.info(f"Deleting document {document_id}: exists_in_qdrant={document_exists_in_qdrant}, exists_in_metadata={document_exists_in_metadata}")
-        
-        # Delete from Qdrant (this is the primary deletion)
+        # Delete from Qdrant (this is the only storage now)
         await qdrant_service.delete_document_chunks(document_id)
         logger.info(f"Deleted document chunks from Qdrant for document {document_id}")
-        
-        # Delete from memory stores (cleanup)
-        if document_id in document_store:
-            document_store.pop(document_id)
-            logger.info(f"Removed document {document_id} from document_store")
-            
-        if document_id in metadata_store:
-            metadata_store.pop(document_id)
-            logger.info(f"Removed document {document_id} from metadata_store")
         
         # Try to delete the uploaded file
         try:
@@ -533,6 +673,60 @@ async def check_cache_status(request: Request):
     except Exception as e:
         return {"error": str(e)}
 
+@router.get("/debug/qdrant-status", response_model=Dict[str, Any])
+async def debug_qdrant_status(request: Request):
+    """Debug endpoint to check Qdrant connection and collection status"""
+    try:
+        qdrant_service = request.app.state.qdrant_service
+        
+        # Test basic connection
+        try:
+            await qdrant_service.health_check()
+            connection_status = "connected"
+        except Exception as e:
+            connection_status = f"failed: {str(e)}"
+        
+        # Check collection existence
+        try:
+            collection_exists = await qdrant_service.collection_exists()
+        except Exception as e:
+            collection_exists = f"error: {str(e)}"
+        
+        # Get point count from all collections
+        try:
+            stats = await qdrant_service.get_collection_stats()
+            point_count = stats.get("total_points", 0)
+            collection_details = stats.get("collection_details", {})
+            print(f"DEBUG: stats = {stats}")  # Debug output
+            # Try to get a sample point from any non-empty collection
+            sample_point = None
+            for collection_name, details in collection_details.items():
+                if details.get("points", 0) > 0:
+                    try:
+                        all_points = await qdrant_service.get_all_points()  # This will need updating too
+                        if all_points:
+                            sample_point = all_points[0]
+                            break
+                    except:
+                        continue
+        except Exception as e:
+            print(f"DEBUG: Exception in get_collection_stats: {e}")
+            point_count = f"error: {str(e)}"
+            sample_point = None
+            collection_details = {}
+            
+        return {
+            "qdrant_url": qdrant_service.client.rest_uri if hasattr(qdrant_service.client, 'rest_uri') else "unknown",
+            "collection_name": qdrant_service.collection_name,
+            "connection_status": connection_status,
+            "collection_exists": collection_exists,
+            "point_count": point_count,
+            "collection_details": collection_details,
+            "sample_point": sample_point
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
 @router.get("/debug/delete-check/{document_id}", response_model=Dict[str, Any])
 async def debug_delete_check(document_id: str, request: Request):
     """Debug what the delete endpoint would see for a specific document"""
@@ -566,6 +760,82 @@ async def debug_delete_check(document_id: str, request: Request):
         }
     except Exception as e:
         return {"error": str(e)}
+
+@router.post("/clear-category/{document_type}")
+async def clear_documents_by_category(document_type: str, request: Request):
+    """Clear all documents for a specific document type/category"""
+    try:
+        qdrant_service = request.app.state.qdrant_service
+        
+        # Determine target collection based on document type
+        target_collection = None
+        if document_type == "performance_attribution":
+            target_collection = qdrant_service.category_collections["performance_docs"]
+        elif document_type == "financial_report":
+            target_collection = qdrant_service.category_collections["technical_docs"]
+        elif document_type == "market_analysis":
+            target_collection = qdrant_service.category_collections["aum_docs"]
+        else:
+            target_collection = qdrant_service.collection_name
+        
+        # Check if collection exists
+        if not await qdrant_service.collection_exists(target_collection):
+            return {
+                "message": f"No {document_type} documents found - collection doesn't exist",
+                "documents_cleared": 0,
+                "collection": target_collection
+            }
+        
+        # Get all points from the target collection
+        all_points = await qdrant_service.get_all_points()
+        points_in_collection = []
+        
+        # Filter points that belong to this collection and document type
+        for point in all_points:
+            payload = point.get("payload", {})
+            if payload.get("document_type") == document_type:
+                points_in_collection.append(point)
+        
+        if not points_in_collection:
+            return {
+                "message": f"No {document_type} documents found to clear",
+                "documents_cleared": 0,
+                "collection": target_collection
+            }
+        
+        # Group by document_id to count documents
+        document_ids = set()
+        for point in points_in_collection:
+            payload = point.get("payload", {})
+            doc_id = payload.get("document_id")
+            if doc_id:
+                document_ids.add(doc_id)
+        
+        # Delete documents by document_id
+        deleted_count = 0
+        for doc_id in document_ids:
+            try:
+                await qdrant_service.delete_document_chunks(doc_id)
+                deleted_count += 1
+            except Exception as e:
+                logger.warning(f"Failed to delete document {doc_id}: {e}")
+        
+        # Also try to recreate the collection to ensure it's clean
+        try:
+            await qdrant_service.create_collection(target_collection)
+        except Exception as e:
+            logger.warning(f"Failed to recreate collection {target_collection}: {e}")
+        
+        return {
+            "message": f"Cleared {deleted_count} {document_type} documents",
+            "documents_cleared": deleted_count,
+            "collection": target_collection,
+            "total_points_cleared": len(points_in_collection)
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to clear {document_type} documents: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to clear documents: {str(e)}")
 
 @router.post("/reload-metadata", response_model=Dict[str, Any])
 async def reload_metadata_from_qdrant(request: Request):

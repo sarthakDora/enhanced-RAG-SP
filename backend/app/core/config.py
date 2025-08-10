@@ -21,10 +21,14 @@ class Settings(BaseSettings):
     DEBUG: bool = Field(default=True)
     
     # File Processing Configuration
-    MAX_FILE_SIZE: int = Field(default=100000000)  # 100MB
-    ALLOWED_EXTENSIONS: str = Field(default="pdf,docx,txt")
+    MAX_FILE_SIZE: int = Field(default=1073741824)  # 1GB (increased for Excel files)
+    ALLOWED_EXTENSIONS: str = Field(default="pdf,docx,txt,xlsx,xls")
     UPLOAD_DIR: str = Field(default="./uploads")
     PROCESSED_DIR: str = Field(default="./processed")
+    
+    # Upload Configuration
+    MAX_REQUEST_SIZE: int = Field(default=1073741824)  # 1GB request body limit
+    UPLOAD_TIMEOUT: int = Field(default=600)  # 10 minutes timeout for large Excel files
     
     # Vector Search Configuration
     DEFAULT_TOP_K: int = Field(default=20)

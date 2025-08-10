@@ -1,0 +1,49 @@
+Performance Attribution Analysis - Q3 2024
+
+Executive Summary:
+- Portfolio outperformed benchmark by +0.8 pp in Q3 2024
+- Technology sector selection (+0.5 pp) was the primary positive driver
+- Healthcare security selection contributed +0.3 pp to relative performance
+- Energy sector allocation detracted -0.2 pp from returns
+
+Total Performance Drivers:
+- Active return: +0.8 pp
+- Sector selection effect: +0.3 pp  
+- Security selection effect: +0.5 pp
+
+Sector-Level Analysis:
+
+Top Contributors:
+1. Information Technology: +0.5 pp
+   - Sector allocation effect: +0.2 pp
+   - Security selection effect: +0.3 pp
+   - Overweight position in semiconductors drove outperformance
+
+2. Healthcare: +0.3 pp
+   - Sector allocation effect: 0.0 pp
+   - Security selection effect: +0.3 pp
+   - Strong stock picking in biotechnology subsector
+
+3. Consumer Discretionary: +0.2 pp
+   - Sector allocation effect: +0.1 pp
+   - Security selection effect: +0.1 pp
+
+Top Detractors:
+1. Energy: -0.2 pp
+   - Sector allocation effect: -0.1 pp
+   - Security selection effect: -0.1 pp
+   - Underweight in oil services hurt performance
+
+2. Utilities: -0.1 pp
+   - Sector allocation effect: -0.1 pp
+   - Security selection effect: 0.0 pp
+
+Risk Factors:
+- High concentration in technology names creates sector risk
+- Energy underweight may hurt in commodity upturn
+- Duration risk from healthcare positioning
+
+Key Statistics:
+- Information ratio: 0.7
+- Tracking error: 4.2%
+- Active share: 65%

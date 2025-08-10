@@ -1,7 +1,23 @@
-import fitz  # PyMuPDF
-# import camelot  # Disabled for now due to dependency conflicts
-import pdfplumber
-import pandas as pd
+try:
+    import fitz  # PyMuPDF
+    PYMUPDF_AVAILABLE = True
+except ImportError:
+    PYMUPDF_AVAILABLE = False
+    print("Warning: PyMuPDF not available")
+
+try:
+    import pdfplumber
+    PDFPLUMBER_AVAILABLE = True
+except ImportError:
+    PDFPLUMBER_AVAILABLE = False
+    print("Warning: pdfplumber not available")
+
+try:
+    import pandas as pd
+    PANDAS_AVAILABLE = True
+except ImportError:
+    PANDAS_AVAILABLE = False
+    print("Warning: pandas not available")
 from pathlib import Path
 import logging
 import re
@@ -11,6 +27,7 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 import json
 import asyncio
+import openpyxl  # For Excel processing
 
 from ..models.document import (
     Document, DocumentChunk, DocumentMetadata, DocumentType, 
@@ -18,12 +35,14 @@ from ..models.document import (
 )
 from ..core.config import settings
 from .ollama_service import OllamaService
+from .performance_attribution_service import PerformanceAttributionService
 
 logger = logging.getLogger(__name__)
 
 class FinancialDocumentProcessor:
     def __init__(self, ollama_service: OllamaService):
         self.ollama_service = ollama_service
+        self.performance_attribution_service = PerformanceAttributionService()
         self.chunk_size = 1000
         self.chunk_overlap = 200
         
@@ -59,6 +78,8 @@ class FinancialDocumentProcessor:
                 content_data = await self._process_txt(file_path)
             elif file_path.lower().endswith('.docx'):
                 content_data = await self._process_txt(file_path)  # Simple text processing for now
+            elif file_path.lower().endswith(('.xlsx', '.xls')):
+                content_data = await self._process_excel(file_path)
             else:
                 logger.error(f"DEBUG: Unsupported file type detected: {file_path}")
                 logger.error(f"DEBUG: File extension: {os.path.splitext(file_path)[1]}")
@@ -219,6 +240,172 @@ class FinancialDocumentProcessor:
         
         return content_data
 
+    async def _process_excel(self, file_path: str) -> Dict[str, Any]:
+        """Process Excel file (both .xlsx and .xls)"""
+        content_data = {
+            'text_content': '',
+            'tables': [],
+            'pages': [],
+            'images': [],
+            'metadata': {},
+            'structure': {}
+        }
+        
+        try:
+            logger.info(f"Starting Excel file processing: {file_path}")
+            text_parts = []
+            processed_sheets = 0
+            
+            # Try to read with pandas first (handles both .xls and .xlsx)
+            try:
+                excel_file = pd.ExcelFile(file_path)
+                sheet_names = excel_file.sheet_names
+                logger.info(f"Found {len(sheet_names)} sheets: {sheet_names}")
+                
+                # Process each sheet
+                for sheet_idx, sheet_name in enumerate(sheet_names):
+                    try:
+                        # Read the sheet
+                        df = pd.read_excel(excel_file, sheet_name=sheet_name)
+                        logger.info(f"Processing sheet '{sheet_name}' with shape {df.shape}")
+                        
+                        # Check if sheet has any content
+                        if df.empty or (df.shape[0] == 0):
+                            logger.warning(f"Sheet '{sheet_name}' is empty, creating minimal content")
+                            page_text = f"Sheet: {sheet_name}\n(Empty sheet)"
+                        else:
+                            # Clean the dataframe - handle NaN values
+                            df = df.fillna('')
+                            
+                            # Convert all columns to string to avoid JSON serialization issues
+                            df_str = df.astype(str)
+                            
+                            # Add table to content_data
+                            content_data['tables'].append({
+                                'table_id': f"excel_sheet_{sheet_idx}_{sheet_name}",
+                                'sheet_name': sheet_name,
+                                'page': sheet_idx + 1,
+                                'data': df_str.to_dict('records'),
+                                'shape': list(df.shape),  # Convert tuple to list for JSON serialization
+                                'extraction_method': 'pandas',
+                                'columns': list(df.columns)
+                            })
+                            
+                            # Create readable text representation
+                            sheet_text = f"\n\n--- Sheet: {sheet_name} ---\n"
+                            # Limit text output for very large sheets
+                            if df.shape[0] > 100:
+                                logger.info(f"Large sheet detected ({df.shape[0]} rows), truncating to first 100 rows for text")
+                                sheet_text += df_str.head(100).to_string(index=False)
+                                sheet_text += f"\n... ({df.shape[0] - 100} more rows)"
+                            else:
+                                sheet_text += df_str.to_string(index=False)
+                            
+                            text_parts.append(sheet_text)
+                            page_text = f"Sheet: {sheet_name}\n" + sheet_text
+                            processed_sheets += 1
+                        
+                        # Create page entry for this sheet
+                        page_data = {
+                            'page_number': sheet_idx + 1,
+                            'text': page_text,
+                            'sheet_name': sheet_name,
+                            'images': 0,
+                            'blocks': [],
+                            'bbox': None
+                        }
+                        content_data['pages'].append(page_data)
+                        
+                    except Exception as sheet_error:
+                        logger.error(f"Error processing sheet '{sheet_name}': {sheet_error}")
+                        # Create a fallback page for this sheet
+                        error_text = f"Sheet: {sheet_name}\nError processing sheet: {str(sheet_error)}"
+                        page_data = {
+                            'page_number': sheet_idx + 1,
+                            'text': error_text,
+                            'sheet_name': sheet_name,
+                            'images': 0,
+                            'blocks': [],
+                            'bbox': None
+                        }
+                        content_data['pages'].append(page_data)
+                        continue
+                
+                excel_file.close()
+                logger.info(f"Excel processing completed. Processed {processed_sheets}/{len(sheet_names)} sheets successfully")
+                
+            except Exception as pandas_error:
+                logger.error(f"Pandas Excel processing failed: {pandas_error}")
+                # Fallback to openpyxl for .xlsx files
+                if file_path.lower().endswith('.xlsx'):
+                    logger.info("Trying openpyxl fallback for .xlsx file")
+                    workbook = openpyxl.load_workbook(file_path, data_only=True)
+                    sheet_names = workbook.sheetnames
+                    
+                    for sheet_idx, sheet_name in enumerate(sheet_names):
+                        worksheet = workbook[sheet_name]
+                        
+                        # Simple text extraction from cells
+                        sheet_text = f"\n\n--- Sheet: {sheet_name} ---\n"
+                        for row in worksheet.iter_rows(values_only=True):
+                            if any(cell is not None for cell in row):
+                                row_text = " | ".join(str(cell) if cell is not None else "" for cell in row)
+                                sheet_text += row_text + "\n"
+                        
+                        text_parts.append(sheet_text)
+                        
+                        page_data = {
+                            'page_number': sheet_idx + 1,
+                            'text': f"Sheet: {sheet_name}\n{sheet_text}",
+                            'sheet_name': sheet_name,
+                            'images': 0,
+                            'blocks': [],
+                            'bbox': None
+                        }
+                        content_data['pages'].append(page_data)
+                    
+                    workbook.close()
+                else:
+                    raise pandas_error  # Re-raise for .xls files since openpyxl can't handle them
+            
+            # Combine all text content
+            if text_parts:
+                content_data['text_content'] = "\n".join(text_parts)
+            else:
+                content_data['text_content'] = f"Excel file: {os.path.basename(file_path)}\nNo readable content found"
+            
+            # Ensure we have at least one page
+            if not content_data['pages']:
+                page_data = {
+                    'page_number': 1,
+                    'text': content_data['text_content'],
+                    'images': 0,
+                    'blocks': [],
+                    'bbox': None
+                }
+                content_data['pages'].append(page_data)
+            
+            logger.info(f"Excel processing complete: {len(content_data['tables'])} tables, {len(content_data['pages'])} pages, {len(content_data['text_content'])} chars")
+            
+        except Exception as e:
+            logger.error(f"Critical error processing Excel file {file_path}: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            
+            # Create minimal fallback content
+            content_data['text_content'] = f"Excel file: {os.path.basename(file_path)}\nProcessing failed: {str(e)}"
+            page_data = {
+                'page_number': 1,
+                'text': content_data['text_content'],
+                'images': 0,
+                'blocks': [],
+                'bbox': None
+            }
+            content_data['pages'] = [page_data]
+            content_data['tables'] = []
+        
+        return content_data
+
     async def _extract_metadata(
         self, 
         content_data: Dict[str, Any], 
@@ -267,6 +454,18 @@ class FinancialDocumentProcessor:
             metadata.update(self._extract_financial_report_metadata(full_text))
         elif document_type == DocumentType.PERFORMANCE_ATTRIBUTION:
             metadata.update(self._extract_performance_attribution_metadata(full_text))
+            
+            # Enhanced performance attribution processing
+            try:
+                attribution_data = self.performance_attribution_service.extract_attribution_data_from_tables(content_data['tables'])
+                if attribution_data:
+                    parsed_data = self.performance_attribution_service.parse_attribution_table(attribution_data)
+                    if parsed_data:
+                        metadata = self.performance_attribution_service.enhance_document_metadata(metadata, parsed_data)
+                        logger.info(f"Enhanced metadata with performance attribution data: {parsed_data.get('period_name', 'Unknown period')}")
+            except Exception as e:
+                logger.warning(f"Failed to process performance attribution data: {e}")
+                
         elif document_type == DocumentType.LEGAL_CONTRACT:
             metadata.update(self._extract_legal_contract_metadata(full_text))
         elif document_type == DocumentType.COMPLIANCE_REPORT:
@@ -276,7 +475,34 @@ class FinancialDocumentProcessor:
         if additional_metadata:
             metadata.update(additional_metadata)
         
-        return DocumentMetadata(**metadata)
+        # Ensure all required fields are present with defaults
+        required_defaults = {
+            'has_financial_data': metadata.get('has_financial_data', False),
+            'custom_fields': metadata.get('custom_fields', {}),
+            'tags': metadata.get('tags', [])
+        }
+        metadata.update(required_defaults)
+        
+        try:
+            return DocumentMetadata(**metadata)
+        except Exception as e:
+            logger.error(f"Error creating DocumentMetadata: {e}")
+            logger.error(f"Metadata keys: {list(metadata.keys())}")
+            # Create minimal metadata that should work
+            minimal_metadata = {
+                'filename': metadata.get('filename', 'unknown.txt'),
+                'file_size': metadata.get('file_size', 1000),
+                'file_type': metadata.get('file_type', '.txt'),
+                'document_type': metadata.get('document_type', 'other'),
+                'upload_timestamp': metadata.get('upload_timestamp', datetime.now()),
+                'total_pages': metadata.get('total_pages', 1),
+                'total_chunks': metadata.get('total_chunks', 0),
+                'has_financial_data': False,
+                'confidence_score': 0.5,
+                'tags': [],
+                'custom_fields': {}
+            }
+            return DocumentMetadata(**minimal_metadata)
 
     def _extract_financial_metrics(self, text: str, tables: List[Dict]) -> Optional[FinancialMetrics]:
         """Extract financial metrics from text and tables"""

@@ -88,8 +88,11 @@ export class ApiService {
     });
   }
 
-  createSession(title?: string): Observable<any> {
-    const body = title ? { title } : {};
+  createSession(title?: string, documentType?: string): Observable<any> {
+    const body: any = {};
+    if (title) body.title = title;
+    if (documentType) body.document_type = documentType;
+    
     return this.http.post(`${this.baseUrl}/chat/sessions`, body, {
       headers: this.getHeaders()
     });
@@ -119,6 +122,15 @@ export class ApiService {
   updateSessionTitle(sessionId: string, title: string): Observable<any> {
     const params = new HttpParams().set('title', title);
     return this.http.post(`${this.baseUrl}/chat/sessions/${sessionId}/title`, null, { params });
+  }
+
+  // Clear documents by category/type
+  clearDocumentsByCategory(documentType: string): Observable<any> {
+    return this.http.post(`${this.baseUrl}/documents/clear-category/${documentType}`, {}, {
+      headers: this.getHeaders()
+    }).pipe(
+      tap(() => this.notifyDocumentsUpdated())
+    );
   }
 
   // Health monitoring

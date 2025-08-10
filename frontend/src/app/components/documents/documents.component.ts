@@ -68,7 +68,7 @@ interface UploadFile {
           <input #fileInput 
                  type="file" 
                  multiple 
-                 accept=".pdf,.docx,.txt"
+                 accept=".pdf,.docx,.txt,.xlsx,.xls"
                  (change)="onFileSelected($event)"
                  style="display: none;">
           
@@ -76,7 +76,7 @@ interface UploadFile {
             <mat-icon class="upload-icon">cloud_upload</mat-icon>
             <h3>Drag & Drop Files Here</h3>
             <p>Or click to browse files</p>
-            <p class="file-info">Supported formats: PDF, DOCX, TXT (Max 100MB)</p>
+            <p class="file-info">Supported formats: PDF, DOCX, TXT, XLSX, XLS (Max 1GB)</p>
           </div>
         </div>
 
@@ -180,7 +180,7 @@ interface UploadFile {
           <div class="stat-card glass-card">
             <mat-icon>speed</mat-icon>
             <div class="stat-content">
-              <h3>{{ stats.average_chunks_per_document?.toFixed(1) }}</h3>
+              <h3>{{ stats.average_chunks_per_document.toFixed(1) }}</h3>
               <p>Avg Chunks/Doc</p>
             </div>
           </div>
@@ -744,14 +744,19 @@ export class DocumentsComponent implements OnInit, OnDestroy {
     this.selectedFiles = [...this.selectedFiles, ...validFiles];
     
     if (validFiles.length !== files.length) {
-      this.showError('Some files were rejected. Only PDF, DOCX, and TXT files under 100MB are allowed.');
+      this.showError('Some files were rejected. Only PDF, DOCX, TXT, XLSX, and XLS files under 1GB are allowed.');
     }
   }
 
   private isValidFile(file: File): boolean {
-    const allowedTypes = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain'];
-    const maxSize = 100 * 1024 * 1024; // 100MB
-    
+    const allowedTypes = [
+      'application/pdf',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // .xlsx
+      'application/vnd.ms-excel', // .xls
+      'text/plain'
+    ];
+    const maxSize = 1024 * 1024 * 1024; // 1GB
     return allowedTypes.includes(file.type) && file.size <= maxSize;
   }
 
@@ -868,6 +873,9 @@ export class DocumentsComponent implements OnInit, OnDestroy {
         return 'description';
       case 'txt':
         return 'text_snippet';
+      case 'xlsx':
+      case 'xls':
+        return 'table_view';
       default:
         return 'insert_drive_file';
     }

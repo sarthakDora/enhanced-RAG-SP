@@ -1,4 +1,4 @@
-import { DocumentSearchResult } from './document.model';
+import { DocumentSearchResult, DocumentType } from './document.model';
 
 export interface ChatMessage {
   message_id: string;
@@ -21,6 +21,9 @@ export interface ChatSession {
   created_at: string;
   updated_at: string;
   
+  // Session focus
+  document_type?: DocumentType;
+  
   messages: ChatMessage[];
   
   max_history: number;
@@ -37,6 +40,9 @@ export interface ChatSession {
 export interface ChatRequest {
   session_id?: string;
   message: string;
+  
+  // Document type selection for focused search
+  document_type?: DocumentType;
   
   use_rag?: boolean;
   top_k?: number;

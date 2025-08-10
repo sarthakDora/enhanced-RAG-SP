@@ -1,7 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 from datetime import datetime
-from .document import DocumentSearchResult
+from .document import DocumentSearchResult, DocumentType
 
 class ChatMessage(BaseModel):
     message_id: str
@@ -25,6 +25,9 @@ class ChatSession(BaseModel):
     created_at: datetime
     updated_at: datetime
     
+    # Session focus
+    document_type: Optional[DocumentType] = None  # Focus on specific document type
+    
     # Messages
     messages: List[ChatMessage] = []
     
@@ -44,6 +47,9 @@ class ChatSession(BaseModel):
 class ChatRequest(BaseModel):
     session_id: Optional[str] = None
     message: str
+    
+    # Document type selection for focused search
+    document_type: Optional[DocumentType] = None
     
     # Search parameters
     use_rag: bool = True

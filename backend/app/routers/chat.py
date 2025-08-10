@@ -1,5 +1,5 @@
 
-from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect, Depends
 from fastapi.responses import StreamingResponse
 from typing import Dict, Any, List
 import json
@@ -47,13 +47,23 @@ async def get_chat_service(request: Request) -> ChatService:
     # Get shared metadata store
     shared_metadata_store = request.app.state.shared_metadata_store
     
-    # Auto-sync: If metadata store is empty but Qdrant has data, reload metadata
-    if not shared_metadata_store:
-        try:
-            logger.info("Metadata cache empty, auto-syncing from Qdrant...")
-            all_points = await qdrant_service.get_all_points()
+    # Auto-sync: Always check Qdrant for documents and sync if needed
+    try:
+        logger.info("Checking Qdrant for documents to sync metadata cache...")
+        all_points = await qdrant_service.get_all_points()
+        
+        if all_points:
+            # Check if we need to sync (either empty cache or point count mismatch)
+            qdrant_doc_count = len(set(point.get("payload", {}).get("document_id") for point in all_points if point.get("payload", {}).get("document_id")))
+            cache_doc_count = len(shared_metadata_store)
             
-            if all_points:
+            logger.info(f"Qdrant has {qdrant_doc_count} unique documents, cache has {cache_doc_count}")
+            
+            if cache_doc_count != qdrant_doc_count or not shared_metadata_store:
+                logger.info("Re-syncing metadata cache from Qdrant...")
+                # Clear existing cache and rebuild
+                shared_metadata_store.clear()
+                
                 from ..models.document import DocumentMetadata
                 from datetime import datetime
                 
@@ -85,12 +95,16 @@ async def get_chat_service(request: Request) -> ChatService:
                         )
                         shared_metadata_store[doc_id] = doc_metadata
                     except Exception as e:
-                        logger.error(f"Failed to auto-sync metadata for document {doc_id}: {e}")
+                        logger.error(f"Failed to sync metadata for document {doc_id}: {e}")
                         continue
                 
-                logger.info(f"Auto-synced {len(shared_metadata_store)} documents from Qdrant")
-        except Exception as e:
-            logger.error(f"Auto-sync failed: {e}")
+                logger.info(f"Synced {len(shared_metadata_store)} documents from Qdrant")
+            else:
+                logger.info("Metadata cache is already in sync with Qdrant")
+        else:
+            logger.info("No documents found in Qdrant")
+    except Exception as e:
+        logger.error(f"Auto-sync failed: {e}")
 
     # Ensure all values in shared_metadata_store are DocumentMetadata objects
     from ..models.document import DocumentMetadata
@@ -119,6 +133,150 @@ async def debug_metadata_store(request: Request):
         }
     except Exception as e:
         return {"error": str(e)}
+
+@router.get("/debug/chat-service-cache", response_model=Dict[str, Any])
+async def debug_chat_service_cache(request: Request, chat_service: ChatService = Depends(get_chat_service)):
+    """Debug endpoint to check chat service document metadata cache"""
+    try:
+        return {
+            "chat_service_cache_count": len(chat_service.document_metadata_cache),
+            "chat_service_cache_keys": list(chat_service.document_metadata_cache.keys()),
+            "sample_cache_metadata": list(chat_service.document_metadata_cache.values())[0].__dict__ if chat_service.document_metadata_cache else None,
+            "agent_orchestrator_cache_count": len(chat_service.agent_orchestrator.metadata_store) if hasattr(chat_service.agent_orchestrator, 'metadata_store') else "N/A"
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+@router.post("/debug/force-sync", response_model=Dict[str, Any])
+async def force_sync_metadata(request: Request):
+    """Force sync metadata from Qdrant to shared store"""
+    try:
+        shared_metadata_store = request.app.state.shared_metadata_store
+        qdrant_service = request.app.state.qdrant_service
+        
+        # Clear existing cache
+        shared_metadata_store.clear()
+        
+        # Force reload from Qdrant
+        all_points = await qdrant_service.get_all_points()
+        
+        if all_points:
+            from ..models.document import DocumentMetadata
+            from datetime import datetime
+            
+            document_chunks = {}
+            for point in all_points:
+                payload = point.get("payload", {})
+                doc_id = payload.get("document_id")
+                if doc_id:
+                    if doc_id not in document_chunks:
+                        document_chunks[doc_id] = []
+                    document_chunks[doc_id].append(payload)
+            
+            # Reconstruct metadata
+            for doc_id, chunks in document_chunks.items():
+                try:
+                    first_chunk = chunks[0]
+                    doc_metadata = DocumentMetadata(
+                        filename=first_chunk.get("filename", f"document_{doc_id[:8]}.txt"),
+                        file_size=first_chunk.get("file_size", 1000),
+                        file_type=first_chunk.get("file_type", ".txt"),
+                        document_type=first_chunk.get("document_type", "other"),
+                        upload_timestamp=first_chunk.get("upload_timestamp", datetime.now().isoformat()),
+                        total_pages=first_chunk.get("total_pages", 1),
+                        total_chunks=len(chunks),
+                        has_financial_data=first_chunk.get("has_financial_data", False),
+                        confidence_score=first_chunk.get("confidence_score", 0.5),
+                        tags=first_chunk.get("tags", []),
+                        custom_fields=first_chunk.get("custom_fields", {})
+                    )
+                    shared_metadata_store[doc_id] = doc_metadata
+                except Exception as e:
+                    logger.error(f"Failed to sync metadata for document {doc_id}: {e}")
+                    continue
+        
+        return {
+            "message": "Force sync completed",
+            "documents_synced": len(shared_metadata_store),
+            "qdrant_points": len(all_points) if all_points else 0,
+            "document_ids": list(shared_metadata_store.keys())
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+@router.post("/debug/auto-repair", response_model=Dict[str, Any])
+async def auto_repair_system(request: Request):
+    """Auto-repair common system issues"""
+    try:
+        fixes_applied = []
+        qdrant_service = request.app.state.qdrant_service
+        shared_metadata_store = request.app.state.shared_metadata_store
+        
+        # Fix 1: Ensure collection exists
+        collection_exists = await qdrant_service.collection_exists()
+        if not collection_exists:
+            await qdrant_service.create_collection()
+            fixes_applied.append("Created missing Qdrant collection")
+        
+        # Fix 2: Force metadata sync
+        shared_metadata_store.clear()
+        all_points = await qdrant_service.get_all_points()
+        
+        if all_points:
+            from ..models.document import DocumentMetadata
+            from datetime import datetime
+            
+            document_chunks = {}
+            for point in all_points:
+                payload = point.get("payload", {})
+                doc_id = payload.get("document_id")
+                if doc_id:
+                    if doc_id not in document_chunks:
+                        document_chunks[doc_id] = []
+                    document_chunks[doc_id].append(payload)
+            
+            # Reconstruct metadata
+            for doc_id, chunks in document_chunks.items():
+                try:
+                    first_chunk = chunks[0]
+                    doc_metadata = DocumentMetadata(
+                        filename=first_chunk.get("filename", f"document_{doc_id[:8]}.txt"),
+                        file_size=first_chunk.get("file_size", 1000),
+                        file_type=first_chunk.get("file_type", ".txt"),
+                        document_type=first_chunk.get("document_type", "other"),
+                        upload_timestamp=first_chunk.get("upload_timestamp", datetime.now().isoformat()),
+                        total_pages=first_chunk.get("total_pages", 1),
+                        total_chunks=len(chunks),
+                        has_financial_data=first_chunk.get("has_financial_data", False),
+                        confidence_score=first_chunk.get("confidence_score", 0.5),
+                        tags=first_chunk.get("tags", []),
+                        custom_fields=first_chunk.get("custom_fields", {})
+                    )
+                    shared_metadata_store[doc_id] = doc_metadata
+                except Exception as e:
+                    logger.error(f"Failed to reconstruct metadata for document {doc_id}: {e}")
+                    continue
+            
+            fixes_applied.append(f"Synced {len(shared_metadata_store)} documents to metadata cache")
+        
+        # Fix 3: Test services
+        try:
+            ollama_service = request.app.state.ollama_service
+            await ollama_service.health_check()
+            fixes_applied.append("Verified Ollama connection")
+        except Exception as e:
+            fixes_applied.append(f"Ollama connection issue: {str(e)}")
+        
+        return {
+            "message": "Auto-repair completed",
+            "fixes_applied": fixes_applied,
+            "documents_found": len(shared_metadata_store),
+            "qdrant_points": len(all_points) if all_points else 0,
+            "system_status": "ready" if shared_metadata_store else "needs_documents"
+        }
+        
+    except Exception as e:
+        return {"error": str(e), "fixes_applied": fixes_applied}
 
 @router.post("/message", response_model=ChatResponse)
 async def send_message(
@@ -246,12 +404,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 @router.post("/sessions", response_model=Dict[str, str])
 async def create_session(
     request: Request,
-    title: str = "New Conversation"
+    title: str = "New Conversation",
+    document_type: str = None
 ):
     """Create a new chat session"""
     try:
         chat_service = await get_chat_service(request)
-        session = await chat_service.create_session(title)
+        session = await chat_service.create_session(title, document_type)
         
         return {
             "session_id": session.session_id,

@@ -110,8 +110,38 @@ app = FastAPI(
     title="Enhanced RAG System API",
     description="Advanced RAG system for financial document processing with multi-strategy reranking",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
+    # Configure for large file uploads
+    docs_url="/docs",
+    redoc_url="/redoc"
 )
+
+# Custom middleware to handle large file uploads
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response, JSONResponse
+from starlette.status import HTTP_413_REQUEST_ENTITY_TOO_LARGE
+
+class LargeFileMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        # Check content length for file uploads
+        content_length = request.headers.get("content-length")
+        if content_length:
+            content_length = int(content_length)
+            if content_length > settings.MAX_REQUEST_SIZE:
+                max_size_mb = settings.MAX_REQUEST_SIZE / (1024 * 1024)
+                current_size_mb = content_length / (1024 * 1024)
+                return JSONResponse(
+                    status_code=HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    content={
+                        "detail": f"Request too large ({current_size_mb:.1f}MB). Maximum allowed size is {max_size_mb:.0f}MB"
+                    }
+                )
+        
+        response = await call_next(request)
+        return response
+
+app.add_middleware(LargeFileMiddleware)
 
 # CORS middleware
 app.add_middleware(
@@ -141,5 +171,17 @@ if __name__ == "__main__":
         host=settings.API_HOST,
         port=settings.API_PORT,
         reload=settings.DEBUG,
-        log_level="info"
+        log_level="info",
+        # Configure for large file uploads
+        limit_max_requests=1000,
+        limit_concurrency=100,
+        timeout_keep_alive=30,
+        # Additional timeout settings for large files
+        timeout_notify=300,  # 5 minutes for notifications
+        h11_max_incomplete_event_size=1073741824,  # 1GB for large uploads
+        # Override the default body size limit
+        server_header=False,
+        date_header=False,
+        # Use asyncio loop for better memory handling
+        loop="asyncio"
     )

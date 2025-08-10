@@ -1,0 +1,9 @@
+PyMuPDF
+openpyxl
+python-docx
+pillow
+pdfplumber
+tabulate
+pandas
+numpy
+scikit-learn

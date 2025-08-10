@@ -11,11 +11,13 @@ import { MatSnackBar } from '@angular/material/snack-bar';
 import { MatDialog } from '@angular/material/dialog';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatMenuModule } from '@angular/material/menu';
+import { MatSelectModule } from '@angular/material/select';
+import { MatFormFieldModule } from '@angular/material/form-field';
 import { Subscription } from 'rxjs';
 
 import { ApiService } from '../../services/api.service';
 import { ChatMessage, ChatResponse, ChatSession, ChatRequest } from '../../models/chat.model';
-import { DocumentSearchResult } from '../../models/document.model';
+import { DocumentSearchResult, DocumentType } from '../../models/document.model';
 
 @Component({
   selector: 'app-chat',
@@ -30,7 +32,9 @@ import { DocumentSearchResult } from '../../models/document.model';
     MatChipsModule,
     MatProgressBarModule,
     MatTooltipModule,
-    MatMenuModule
+    MatMenuModule,
+    MatSelectModule,
+    MatFormFieldModule
   ],
   template: `
     <div class="chat-container fade-in">
@@ -39,6 +43,32 @@ import { DocumentSearchResult } from '../../models/document.model';
         <div class="session-info">
           <h2 class="gradient-text">{{ currentSession?.title || 'New Conversation' }}</h2>
           <p class="text-muted">Financial AI Assistant</p>
+          
+          <!-- Document Type Selection -->
+          <div class="document-type-selection" *ngIf="currentSession">
+            <mat-form-field appearance="outline" class="document-type-field">
+              <mat-label>Document Focus</mat-label>
+              <mat-select [(ngModel)]="selectedDocumentType" 
+                          (selectionChange)="onDocumentTypeChange($event.value)">
+                <mat-option value="">All Documents</mat-option>
+                <mat-option value="performance_attribution">Performance Attribution</mat-option>
+                <mat-option value="financial_report">Financial Reports</mat-option>
+                <mat-option value="market_analysis">Market Analysis</mat-option>
+                <mat-option value="compliance_report">Compliance Reports</mat-option>
+                <mat-option value="legal_contract">Legal Contracts</mat-option>
+                <mat-option value="other">Other</mat-option>
+              </mat-select>
+            </mat-form-field>
+            
+            <!-- Clear Documents Button -->
+            <button mat-icon-button 
+                    class="glass-button clear-docs-btn"
+                    *ngIf="selectedDocumentType"
+                    (click)="clearDocuments()"
+                    [title]="'Clear ' + getDocumentTypeName(selectedDocumentType) + ' documents'">
+              <mat-icon>clear_all</mat-icon>
+            </button>
+          </div>
         </div>
         
         <div class="chat-controls">
@@ -169,7 +199,21 @@ import { DocumentSearchResult } from '../../models/document.model';
       <div class="chat-input glass-card">
         <!-- File Attachment Area -->
         <div *ngIf="attachedFiles.length > 0" class="attached-files">
-          <h4>Attached Files</h4>
+          <div class="attached-files-header">
+            <h4>Attached Files</h4>
+            <mat-form-field appearance="outline" class="upload-type-field">
+              <mat-label>Upload as</mat-label>
+              <mat-select [(ngModel)]="uploadDocumentType">
+                <mat-option value="performance_attribution">Performance Attribution</mat-option>
+                <mat-option value="financial_report">Financial Reports</mat-option>
+                <mat-option value="market_analysis">Market Analysis</mat-option>
+                <mat-option value="compliance_report">Compliance Reports</mat-option>
+                <mat-option value="legal_contract">Legal Contracts</mat-option>
+                <mat-option value="other">Other</mat-option>
+              </mat-select>
+            </mat-form-field>
+          </div>
+          
           <div class="file-list">
             <div *ngFor="let file of attachedFiles; let i = index" 
                  class="attached-file-item glass-card">
@@ -272,9 +316,10 @@ import { DocumentSearchResult } from '../../models/document.model';
     .chat-header {
       display: flex;
       justify-content: space-between;
-      align-items: center;
+      align-items: flex-start;
       padding: 20px 24px;
       margin-bottom: 0;
+      gap: 16px;
     }
 
     .session-info h2 {
@@ -285,6 +330,29 @@ import { DocumentSearchResult } from '../../models/document.model';
     .session-info p {
       margin: 4px 0 0 0;
       font-size: 14px;
+    }
+
+    .document-type-selection {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .document-type-field {
+      min-width: 200px;
+    }
+
+    .document-type-field .mat-mdc-form-field-wrapper {
+      background: transparent !important;
+    }
+
+    .clear-docs-btn {
+      color: #f44336 !important;
+    }
+
+    .clear-docs-btn:hover {
+      background: rgba(244, 67, 54, 0.1) !important;
     }
 
     .chat-controls {
@@ -579,10 +647,25 @@ import { DocumentSearchResult } from '../../models/document.model';
       border-radius: 12px;
     }
 
+    .attached-files-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
     .attached-files h4 {
-      margin: 0 0 12px 0;
+      margin: 0;
       font-size: 14px;
       color: var(--text-secondary);
+    }
+
+    .upload-type-field {
+      min-width: 180px;
+    }
+
+    .upload-type-field .mat-mdc-form-field-wrapper {
+      background: transparent !important;
     }
 
     .file-list {
@@ -701,6 +784,10 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
   isTyping = false;
   showSettings = false;
 
+  // Document type selection
+  selectedDocumentType: string = '';
+  uploadDocumentType: string = 'other';
+
   // File attachment properties
   attachedFiles: File[] = [];
   isUploading = false;
@@ -740,6 +827,7 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
         title: response.title,
         created_at: response.created_at,
         updated_at: response.created_at,
+        document_type: undefined,
         messages: [],
         max_history: 50,
         context_window: 4000,
@@ -750,6 +838,7 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
         last_activity: response.created_at
       };
       this.messages = [];
+      this.selectedDocumentType = '';
     } catch (error) {
       this.showError('Failed to create new session');
     }
@@ -783,6 +872,7 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
       const chatRequest: ChatRequest = {
         session_id: this.currentSession?.session_id,
         message: message,
+        document_type: this.selectedDocumentType as DocumentType || undefined,
         use_rag: true,
         top_k: 10,
         rerank_top_k: 3,
@@ -961,7 +1051,7 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
         try {
           const response = await this.apiService.uploadDocuments(
             [file],
-            'other', // Default document type
+            this.uploadDocumentType, // Use selected document type
             'chat-attachment'
           ).toPromise();
           
@@ -1004,5 +1094,36 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
       duration: 3000,
       panelClass: ['success-snackbar']
     });
+  }
+
+  // Document type selection methods
+  onDocumentTypeChange(documentType: string) {
+    this.selectedDocumentType = documentType;
+    if (this.currentSession) {
+      this.currentSession.document_type = documentType as DocumentType;
+    }
+  }
+
+  async clearDocuments() {
+    if (!this.selectedDocumentType) return;
+
+    try {
+      const response = await this.apiService.clearDocumentsByCategory(this.selectedDocumentType).toPromise();
+      this.showSuccess(`Cleared ${response.documents_cleared} ${this.getDocumentTypeName(this.selectedDocumentType)} documents`);
+    } catch (error) {
+      this.showError('Failed to clear documents');
+    }
+  }
+
+  getDocumentTypeName(type: string): string {
+    const typeNames: { [key: string]: string } = {
+      'performance_attribution': 'Performance Attribution',
+      'financial_report': 'Financial Report',
+      'market_analysis': 'Market Analysis', 
+      'compliance_report': 'Compliance Report',
+      'legal_contract': 'Legal Contract',
+      'other': 'Other'
+    };
+    return typeNames[type] || 'Unknown';
   }
 }

@@ -15,6 +15,8 @@ from .ollama_service import OllamaService
 from .qdrant_service import QdrantService
 from .reranking_service import MultiStrategyReranker
 from .agent_orchestrator import MultiAgentOrchestrator
+from .router_service import RouterService, QueryType
+from .multi_agent_pipeline import MultiAgentPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,12 @@ class ChatService:
             qdrant_service=qdrant_service
         )
         
+        # Initialize router service
+        self.router_service = RouterService()
+        
+        # Initialize multi-agent pipeline
+        self.multi_agent_pipeline = MultiAgentPipeline(ollama_service, qdrant_service)
+        
         # In-memory storage for sessions (in production, use a database)
         self.sessions: Dict[str, ChatSession] = {}
         self.document_metadata_cache: Dict[str, Any] = {}
@@ -37,13 +45,14 @@ class ChatService:
         # Update orchestrator's metadata store reference
         self.agent_orchestrator.metadata_store = self.document_metadata_cache
         
-    async def create_session(self, title: str = "New Conversation") -> ChatSession:
+    async def create_session(self, title: str = "New Conversation", document_type: Optional[str] = None) -> ChatSession:
         """Create a new chat session"""
         now = datetime.now()
         session_id = str(uuid.uuid4())
         session = ChatSession(
             session_id=session_id,
             title=title,
+            document_type=document_type,
             created_at=now,
             updated_at=now,
             last_activity=now,
@@ -86,188 +95,33 @@ class ChatService:
         session.messages.append(user_message)
         
         try:
-            logger.info(f"Processing chat request with multi-agent orchestrator - use_rag: {request.use_rag}")
+            logger.info(f"Processing chat request with intelligent routing")
             
-            # Prepare context for multi-agent processing
-            context = {
-                "session_id": session.session_id,
-                "conversation_history": [
-                    {"role": msg.role, "content": msg.content}
-                    for msg in session.messages[-10:]  # Last 10 messages
-                    if msg.role in ['user', 'assistant']
-                ],
-                "temperature": request.temperature,
-                "max_tokens": request.max_tokens,
-                "document_filters": request.document_filters,
-                "user_preferences": getattr(request, 'user_preferences', {})
-            }
+            # Get conversation history for context
+            conversation_history = [
+                {"role": msg.role, "content": msg.content}
+                for msg in session.messages[-10:]  # Last 10 messages
+                if msg.role in ['user', 'assistant']
+            ]
             
-            # Enhanced RAG system with proper guardrails
+            # Classify the query using router service
+            classification = self.router_service.classify_query(
+                query=request.message,
+                session_id=session.session_id,
+                conversation_history=conversation_history
+            )
+            
+            logger.info(f"Query classified as: {classification['query_type'].value} with confidence: {classification['confidence']}")
+            logger.info(f"Routing decision: {classification['routing_decision']}")
+            
+            # Generate response context
+            response_context = self.router_service.generate_response_context(classification, session.session_id)
+            
+            # Process based on routing decision
             generation_start = time.time()
-            
-            if request.use_rag:
-                try:
-                    # Check if we have any uploaded documents
-                    print(f"[DEBUG] (pre-check) document_metadata_cache: {self.document_metadata_cache}")
-                    if not self.document_metadata_cache:
-                        print(f"[DEBUG] No documents found in metadata cache. Current cache: {self.document_metadata_cache}")
-                        agent_response = {
-                            "answer": "I don't have any documents uploaded to search through. Please upload relevant documents first before asking questions about specific data or reports.",
-                            "confidence": 1.0,
-                            "sources": [],
-                            "total_agents_used": 1,
-                            "processing_time": (time.time() - generation_start),
-                            "agent_responses": [{"agent": "no_documents_guard", "success": True, "confidence": 1.0}]
-                        }
-                    else:
-                        print(f"[DEBUG] (post-check) document_metadata_cache: {self.document_metadata_cache}")
-                        # Generate query embedding
-                        logger.info(f"Generating embedding for query: '{request.message}'")
-                        query_embedding = await self.ollama_service.generate_embedding(request.message)
-                        logger.info(f"Generated embedding with {len(query_embedding)} dimensions")
-
-                        # Create search request with stricter similarity threshold
-                        from ..models.document import DocumentSearchRequest
-                        search_request = DocumentSearchRequest(
-                            query=request.message,
-                            top_k=request.top_k or 10,
-                            similarity_threshold=request.similarity_threshold or 0.5,  # Stricter threshold
-                            use_reranking=True,
-                            rerank_top_k=request.rerank_top_k or 3
-                        )
-                        logger.info(f"Search request: top_k={search_request.top_k}, threshold={search_request.similarity_threshold}")
-
-                        # Search documents directly using the metadata cache
-                        logger.info(f"Metadata cache has {len(self.document_metadata_cache)} documents")
-                        logger.info(f"Available documents: {[meta.filename for meta in self.document_metadata_cache.values()]}")
-
-                        search_results = await self.qdrant_service.search_similar_chunks(
-                            query_embedding=query_embedding,
-                            search_request=search_request,
-                            document_metadata=self.document_metadata_cache
-                        )
-
-                        logger.info(f"Direct search found {len(search_results)} documents")
-                        if search_results:
-                            logger.info(f"Top result score: {search_results[0].score}, document: {search_results[0].document_metadata.filename if search_results[0].document_metadata else 'Unknown'}")
-
-                        # Apply guardrails for document relevance
-                        if not search_results or (search_results and search_results[0].score < 0.4):
-                            # Check if query seems to be asking for specific data
-                            data_keywords = ['top', 'contributors', 'performance', 'attribution', 'analysis', 
-                                           'report', 'data', 'results', 'findings', 'summary', 'metrics',
-                                           'statistics', 'numbers', 'figures', 'breakdown', 'details']
-
-                            query_lower = request.message.lower()
-                            asks_for_specific_data = any(keyword in query_lower for keyword in data_keywords)
-                            
-                            if asks_for_specific_data:
-                                available_docs = [meta.filename for meta in self.document_metadata_cache.values()]
-                                agent_response = {
-                                    "answer": f"I couldn't find relevant data in the uploaded documents to answer your question. Available documents: {', '.join(available_docs)}. Please ensure you're asking about information contained in these documents, or upload the relevant documents that contain the data you're looking for.",
-                                    "confidence": 1.0,
-                                    "sources": [],
-                                    "total_agents_used": 1,
-                                    "processing_time": (time.time() - generation_start),
-                                    "agent_responses": [{"agent": "no_relevant_data_guard", "success": True, "confidence": 1.0}]
-                                }
-                            else:
-                                # General question, provide general response with disclaimer
-                                direct_response = await self.ollama_service.generate_response(
-                                    prompt=request.message,
-                                    context="",
-                                    temperature=request.temperature,
-                                    system_prompt=self._get_financial_system_prompt() + "\n\nIMPORTANT: You are responding to a general question. Make it clear that your response is not based on specific uploaded documents."
-                                )
-                                
-                                disclaimer = "\n\n*Note: This response is based on general knowledge, not specific uploaded documents. For document-specific questions, please ensure relevant documents are uploaded.*"
-                                
-                                agent_response = {
-                                    "answer": direct_response["response"] + disclaimer,
-                                    "confidence": 0.6,
-                                    "sources": [],
-                                    "total_agents_used": 1,
-                                    "processing_time": (time.time() - generation_start),
-                                    "agent_responses": [{"agent": "general_responder", "success": True, "confidence": 0.6}]
-                                }
-                        else:
-                            # Found relevant documents - proceed with RAG response
-                            context_documents = []
-                            for source in search_results:
-                                context_documents.append({
-                                    'filename': source.document_metadata.filename if source.document_metadata else 'Unknown Document',
-                                    'content': source.content,
-                                    'document_type': source.document_metadata.document_type if source.document_metadata else None,
-                                    'confidence': source.score
-                                })
-                            
-                            # Get conversation history
-                            conversation_history = [
-                                {"role": msg.role, "content": msg.content}
-                                for msg in session.messages[-10:]
-                                if msg.role in ['user', 'assistant']
-                            ]
-                            
-                            response_data = await self.ollama_service.generate_rag_response(
-                                query=request.message,
-                                context_documents=context_documents,
-                                conversation_history=conversation_history,
-                                temperature=request.temperature
-                            )
-                            
-                            # Enhanced system prompt for document-based responses
-                            enhanced_response = response_data["response"]
-                            if not enhanced_response.lower().startswith(("based on", "according to", "from the")):
-                                doc_names = list(set([doc['filename'] for doc in context_documents]))
-                                source_mention = f"Based on the uploaded document(s) {', '.join(doc_names)}: "
-                                enhanced_response = source_mention + enhanced_response
-                            
-                            agent_response = {
-                                "answer": enhanced_response,
-                                "confidence": min(0.95, search_results[0].score + 0.1),
-                                "sources": [
-                                    {
-                                        "filename": doc['filename'],
-                                        "content": doc['content'][:200] + "...",
-                                        "confidence": doc['confidence'],
-                                        "document_type": doc.get('document_type', 'unknown')
-                                    }
-                                    for doc in context_documents
-                                ],
-                                "total_agents_used": 1,
-                                "processing_time": (time.time() - generation_start),
-                                "agent_responses": [{"agent": "document_retriever", "success": True, "confidence": min(0.95, search_results[0].score + 0.1)}]
-                            }
-                            
-                except Exception as e:
-                    logger.error(f"RAG processing failed: {e}")
-                    agent_response = {
-                        "answer": "I encountered an error while searching through the uploaded documents. Please try rephrasing your question or check if the documents are properly uploaded.",
-                        "confidence": 0.1,
-                        "sources": [],
-                        "total_agents_used": 1,
-                        "processing_time": (time.time() - generation_start),
-                        "agent_responses": [{"agent": "error_handler", "success": False, "confidence": 0.1}]
-                    }
-            else:
-                # Non-RAG request - general knowledge question
-                direct_response = await self.ollama_service.generate_response(
-                    prompt=request.message,
-                    context="",
-                    temperature=request.temperature,
-                    system_prompt=self._get_financial_system_prompt() + "\n\nIMPORTANT: This is a general knowledge question. Be clear that your response is not based on specific documents."
-                )
-                
-                disclaimer = "\n\n*Note: This response is based on general knowledge, not specific uploaded documents.*"
-                
-                agent_response = {
-                    "answer": direct_response["response"] + disclaimer,
-                    "confidence": 0.7,
-                    "sources": [],
-                    "total_agents_used": 1,
-                    "processing_time": (time.time() - generation_start),
-                    "agent_responses": [{"agent": "general_knowledge", "success": True, "confidence": 0.7}]
-                }
+            agent_response = await self._process_by_routing_decision(
+                classification, request, session, conversation_history, generation_start
+            )
             
             # Continue with existing logic...
             
@@ -445,9 +299,14 @@ class ChatService:
                 reranking_strategy="hybrid"
             )
             
-            # Apply document filters if provided
+            # Apply document type filter from session or request
+            document_type_filter = request.document_type or session.document_type
+            if document_type_filter:
+                search_request.document_types = [document_type_filter]
+            
+            # Apply additional document filters if provided
             if request.document_filters:
-                if "document_types" in request.document_filters:
+                if "document_types" in request.document_filters and not document_type_filter:
                     search_request.document_types = request.document_filters["document_types"]
                 if "fiscal_years" in request.document_filters:
                     search_request.fiscal_years = request.document_filters["fiscal_years"]
@@ -456,9 +315,19 @@ class ChatService:
                 if "tags" in request.document_filters:
                     search_request.tags = request.document_filters["tags"]
             
-            # Search in Qdrant
+            # Determine target collection based on document type
+            target_collection = None
+            if document_type_filter:
+                if document_type_filter == "performance_attribution":
+                    target_collection = self.qdrant_service.category_collections["performance_docs"]
+                elif document_type_filter == "financial_report":
+                    target_collection = self.qdrant_service.category_collections["technical_docs"]
+                elif document_type_filter == "market_analysis":
+                    target_collection = self.qdrant_service.category_collections["aum_docs"]
+            
+            # Search in Qdrant (specific collection or all collections)
             initial_results = await self.qdrant_service.search_similar_chunks(
-                query_embedding, search_request, self.document_metadata_cache
+                query_embedding, search_request, self.document_metadata_cache, target_collection
             )
             
             # Rerank results
@@ -518,7 +387,70 @@ class ChatService:
 
     def _get_financial_system_prompt(self) -> str:
         """Get system prompt optimized for financial document analysis"""
-        return """You are FinanceGPT, an expert financial analyst AI with deep knowledge of financial documents, reports, and analysis. You specialize in:
+        return """You are a buy-side performance attribution commentator for an institutional asset manager.
+Your audience is portfolio managers and senior analysts.
+Write concise, evidence-based commentary grounded ONLY in the provided context (tables, derived stats, and metadata).
+Quantify every claim with percentage points (pp) and specify the period and level (total vs. sector).
+Attribute drivers correctly (sector selection vs. security selection; include "total management/interaction" if provided).
+Never invent data or security names. If information is missing, say so briefly.
+Tone: crisp, professional, specific.
+
+## Performance Attribution Analysis Template
+
+When analyzing performance attribution data, structure your analysis using this format:
+
+Period: {period_name}
+
+# Attribution Table
+{TABULAR_BLOCK}
+
+# Derived Stats
+Total active return (pp): {total_active_pp}
+
+Per-sector metrics:
+{PER_SECTOR_BLOCK}
+# each line example:
+# - Information Technology: Portfolio 7.2% vs Benchmark 6.5% → Active 0.7 pp; Sector 0.4 pp; Issue 0.3 pp; Mgmt 0.7 pp; Total Attribution = 0.7
+
+Ranked sectors (by Total Attribution):
+Top contributors: {top_contributors}
+Top detractors: {top_detractors}
+
+# Task
+Using ONLY the context, draft attribution commentary for {period_name}.
+- Quantify each claim with precise pp deltas.
+- Name top 2–3 positive contributors and 1–2 detractors and explain if the driver was sector selection, security selection, or both.
+- Keep it data-first, no fluff.
+- Do not show whole table inside response.
+
+Return markdown with sections:
+- Executive summary (bullets)
+- Total performance drivers  
+- Sector-level highlights
+- Risks/watch items (optional)
+
+Output structure (markdown):
+1) Executive summary (3–5 bullets)
+2) Total performance drivers
+3) Sector-level highlights (top contributors and detractors)
+4) Risks / watch items (optional, only if justified by data)
+
+Rules:
+- One decimal place for all pp values; keep +/- signs.
+- Rank sectors by Total Attribution (pp) = Sector Selection + Issue Selection.
+- If totals don't reconcile, add a short "Data caveat" bullet and do not guess.
+- Executive summary ~80–120 words; full note ~150–250 words.
+- Focus on actionable insights for portfolio managers.
+
+Example Question: What were the key drivers of portfolio performance in Q3 2024?
+Example Answer: 
+**Executive Summary**
+• Portfolio outperformed benchmark by +0.8 pp in Q3 2024
+• Technology sector selection (+0.5 pp) was the primary driver
+• Healthcare security selection contributed +0.3 pp
+• Energy sector allocation detracted -0.2 pp
+
+You are also FinanceGPT, an expert financial analyst AI with deep knowledge of financial documents, reports, and analysis. You specialize in:
 
 - Financial statement analysis and interpretation
 - Performance attribution and investment analysis  
@@ -747,3 +679,220 @@ Always be transparent about your information sources and limitations."""
             logger.info(f"Cleaned up {len(inactive_sessions)} inactive sessions")
         
         return len(inactive_sessions)
+    
+    async def _process_by_routing_decision(self, classification: Dict[str, Any], request: ChatRequest, 
+                                         session: ChatSession, conversation_history: List[Dict], 
+                                         generation_start: float) -> Dict[str, Any]:
+        """Process query based on router's classification"""
+        routing_decision = classification["routing_decision"]
+        query_type = classification["query_type"]
+        
+        logger.info(f"Processing with routing decision: {routing_decision}")
+        
+        try:
+            if routing_decision == "store_and_respond":
+                # Handle personal information storage
+                personal_info = classification.get("personal_info_extracted", {})
+                response_text = self.router_service.format_personal_info_response(personal_info)
+                
+                return {
+                    "answer": response_text,
+                    "confidence": 0.95,
+                    "sources": [],
+                    "total_agents_used": 1,
+                    "processing_time": (time.time() - generation_start),
+                    "agent_responses": [{"agent": "personal_info_handler", "success": True, "confidence": 0.95}]
+                }
+            
+            elif routing_decision == "greeting_with_memory":
+                # Handle personalized greetings
+                response_text = self.router_service.get_personalized_greeting(session.session_id)
+                
+                return {
+                    "answer": response_text,
+                    "confidence": 0.9,
+                    "sources": [],
+                    "total_agents_used": 1,
+                    "processing_time": (time.time() - generation_start),
+                    "agent_responses": [{"agent": "greeting_handler", "success": True, "confidence": 0.9}]
+                }
+            
+            elif routing_decision == "knowledge_base_search":
+                # Handle document/knowledge base queries with fallback
+                try:
+                    return await self._handle_knowledge_base_query(request, conversation_history, generation_start)
+                except Exception as e:
+                    logger.error(f"Knowledge base query failed, falling back to general query: {e}")
+                    return await self._handle_general_query(request, conversation_history, generation_start, with_memory=False)
+            
+            elif routing_decision == "conversational_with_context":
+                # Handle conversational follow-ups
+                use_rag = classification.get("requires_rag", False)
+                if use_rag:
+                    try:
+                        return await self._handle_knowledge_base_query(request, conversation_history, generation_start)
+                    except Exception as e:
+                        logger.error(f"RAG query failed, falling back to general query: {e}")
+                        return await self._handle_general_query(request, conversation_history, generation_start, with_memory=True)
+                else:
+                    return await self._handle_general_query(request, conversation_history, generation_start, with_memory=True)
+            
+            else:  # general_knowledge
+                # Handle general knowledge queries
+                return await self._handle_general_query(request, conversation_history, generation_start)
+                
+        except Exception as e:
+            logger.error(f"Route processing failed for {routing_decision}: {e}")
+            # Ultimate fallback - simple response
+            return {
+                "answer": "I encountered an error processing your request. Please try rephrasing your question or check if the system is properly configured.",
+                "confidence": 0.1,
+                "sources": [],
+                "total_agents_used": 1,
+                "processing_time": (time.time() - generation_start),
+                "agent_responses": [{"agent": "error_fallback", "success": False, "confidence": 0.1, "error": str(e)}]
+            }
+    
+    async def _handle_knowledge_base_query(self, request: ChatRequest, conversation_history: List[Dict], 
+                                         generation_start: float) -> Dict[str, Any]:
+        """Handle queries that require knowledge base/document search using multi-agent pipeline"""
+        try:
+            # Check if we have any uploaded documents
+            logger.info(f"Document metadata cache status: {len(self.document_metadata_cache)} documents")
+            if self.document_metadata_cache:
+                logger.info(f"Available documents: {list(self.document_metadata_cache.keys())}")
+            
+            # If no documents in cache, try to sync from Qdrant one more time
+            if not self.document_metadata_cache:
+                logger.info("No documents in cache, attempting emergency sync from Qdrant...")
+                try:
+                    all_points = await self.qdrant_service.get_all_points()
+                    if all_points:
+                        logger.info(f"Found {len(all_points)} points in Qdrant, reconstructing metadata cache...")
+                        
+                        from ..models.document import DocumentMetadata
+                        from datetime import datetime
+                        
+                        document_chunks = {}
+                        for point in all_points:
+                            payload = point.get("payload", {})
+                            doc_id = payload.get("document_id")
+                            if doc_id:
+                                if doc_id not in document_chunks:
+                                    document_chunks[doc_id] = []
+                                document_chunks[doc_id].append(payload)
+                        
+                        # Reconstruct metadata
+                        for doc_id, chunks in document_chunks.items():
+                            try:
+                                first_chunk = chunks[0]
+                                doc_metadata = DocumentMetadata(
+                                    filename=first_chunk.get("filename", f"document_{doc_id[:8]}.txt"),
+                                    file_size=first_chunk.get("file_size", 1000),
+                                    file_type=first_chunk.get("file_type", ".txt"),
+                                    document_type=first_chunk.get("document_type", "other"),
+                                    upload_timestamp=first_chunk.get("upload_timestamp", datetime.now().isoformat()),
+                                    total_pages=first_chunk.get("total_pages", 1),
+                                    total_chunks=len(chunks),
+                                    has_financial_data=first_chunk.get("has_financial_data", False),
+                                    confidence_score=first_chunk.get("confidence_score", 0.5),
+                                    tags=first_chunk.get("tags", []),
+                                    custom_fields=first_chunk.get("custom_fields", {})
+                                )
+                                self.document_metadata_cache[doc_id] = doc_metadata
+                            except Exception as e:
+                                logger.error(f"Failed to reconstruct metadata for document {doc_id}: {e}")
+                                continue
+                        
+                        logger.info(f"Emergency sync completed: {len(self.document_metadata_cache)} documents loaded")
+                    else:
+                        logger.info("No points found in Qdrant during emergency sync")
+                except Exception as e:
+                    logger.error(f"Emergency sync from Qdrant failed: {e}")
+            
+            # Final check after emergency sync
+            if not self.document_metadata_cache:
+                return {
+                    "answer": "I don't have any documents uploaded to search through. Please upload relevant documents first before asking questions about specific data or reports.\n\nTo upload documents, use the document upload endpoint with financial reports, performance data, or attribution analysis files.",
+                    "confidence": 1.0,
+                    "sources": [],
+                    "total_agents_used": 1,
+                    "processing_time": (time.time() - generation_start),
+                    "agent_responses": [{"agent": "no_documents_guard", "success": True, "confidence": 1.0}]
+                }
+            else:
+                logger.info(f"Proceeding with {len(self.document_metadata_cache)} documents available")
+            
+            logger.info(f"Processing knowledge base query with multi-agent pipeline: '{request.message}'")
+            
+            # Ensure pipeline has access to document metadata cache
+            self.multi_agent_pipeline.set_document_metadata_cache(self.document_metadata_cache)
+            
+            # Use the multi-agent pipeline for intelligent processing
+            search_params = {
+                'top_k': request.top_k or 10,
+                'similarity_threshold': request.similarity_threshold or 0.5
+            }
+            
+            pipeline_result = await self.multi_agent_pipeline.process_query(
+                query=request.message,
+                conversation_history=conversation_history,
+                search_params=search_params
+            )
+            
+            logger.info(f"Multi-agent pipeline completed - Category: {pipeline_result.get('category')}, Sources: {len(pipeline_result.get('sources', []))}")
+            
+            return pipeline_result
+            
+        except Exception as e:
+            logger.error(f"Multi-agent pipeline processing failed: {e}")
+            return {
+                "answer": "I encountered an error while processing your query through the intelligent analysis system. Please try rephrasing your question.",
+                "confidence": 0.1,
+                "sources": [],
+                "total_agents_used": 1,
+                "processing_time": (time.time() - generation_start),
+                "agent_responses": [{"agent": "pipeline_error_handler", "success": False, "confidence": 0.1, "error": str(e)}]
+            }
+    
+    async def _handle_general_query(self, request: ChatRequest, conversation_history: List[Dict], 
+                                  generation_start: float, with_memory: bool = False) -> Dict[str, Any]:
+        """Handle general knowledge queries"""
+        try:
+            # Get personal context if memory is enabled
+            personal_context = ""
+            if with_memory:
+                personal_info = self.router_service.conversation_memory.get_personal_info(request.session_id or "")
+                if personal_info.get("name"):
+                    personal_context = f"Remember that the user's name is {personal_info['name']}. "
+            
+            system_prompt = self._get_financial_system_prompt() + f"\n\nIMPORTANT: This is a general knowledge question. Be clear that your response is not based on specific documents. {personal_context}"
+            
+            direct_response = await self.ollama_service.generate_response(
+                prompt=request.message,
+                context="",
+                temperature=request.temperature,
+                system_prompt=system_prompt
+            )
+            
+            disclaimer = "\n\n*Note: This response is based on general knowledge, not specific uploaded documents.*"
+            
+            return {
+                "answer": direct_response["response"] + disclaimer,
+                "confidence": 0.7,
+                "sources": [],
+                "total_agents_used": 1,
+                "processing_time": (time.time() - generation_start),
+                "agent_responses": [{"agent": "general_knowledge", "success": True, "confidence": 0.7}]
+            }
+            
+        except Exception as e:
+            logger.error(f"General query processing failed: {e}")
+            return {
+                "answer": "I encountered an error while processing your question. Please try again.",
+                "confidence": 0.1,
+                "sources": [],
+                "total_agents_used": 1,
+                "processing_time": (time.time() - generation_start),
+                "agent_responses": [{"agent": "error_handler", "success": False, "confidence": 0.1}]
+            }
