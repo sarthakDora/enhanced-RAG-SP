@@ -172,7 +172,8 @@ class OllamaService:
                         "generation_time_ms": generation_time * 1000,
                         "prompt_eval_count": result.get("prompt_eval_count", 0),
                         "eval_count": result.get("eval_count", 0),
-                        "total_duration": result.get("total_duration", 0)
+                        "total_duration": result.get("total_duration", 0),
+                        "prompt": full_prompt
                     }
                 else:
                     logger.error(f"Failed to generate response: {response.text}")
@@ -396,7 +397,8 @@ ANSWER:"""
                 "response": response.strip(),
                 "generation_time_ms": generation_time * 1000,
                 "context_used": len(context_documents),
-                "has_context": bool(context_documents)
+                "has_context": bool(context_documents),
+                "prompt": formatted_prompt
             }
             
         except Exception as e:

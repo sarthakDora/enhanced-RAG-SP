@@ -281,3 +281,48 @@ body {
   0% { transform: rotate(0deg); }
   100% { transform: rotate(360deg); }
 }
+
+/* Prompt Dialog Specific Styles */
+.prompt-dialog-panel .mat-mdc-dialog-container {
+  max-width: 90vw !important;
+  width: 800px !important;
+  max-height: 80vh !important;
+}
+
+.prompt-dialog-panel .mat-mdc-dialog-content {
+  color: var(--text-primary) !important;
+}
+
+.prompt-dialog-panel .mat-mdc-dialog-title {
+  color: var(--text-primary) !important;
+  font-weight: 600 !important;
+}
+
+/* Chat Settings Dialog Styles */
+.chat-settings-dialog-panel .mat-mdc-dialog-container {
+  max-width: 95vw !important;
+  width: 700px !important;
+  max-height: 90vh !important;
+  background: rgba(255, 255, 255, 0.95) !important;
+  backdrop-filter: blur(10px) !important;
+  border: 1px solid var(--glass-primary) !important;
+  border-radius: 16px !important;
+}
+
+.chat-settings-dialog-panel .mat-mdc-dialog-content {
+  color: var(--text-primary) !important;
+  padding: 0 !important;
+}
+
+.chat-settings-dialog-panel .mat-mdc-dialog-title {
+  color: var(--text-primary) !important;
+  font-weight: 600 !important;
+}
+
+.chat-settings-dialog-panel .mat-mdc-tab-group {
+  --mdc-tab-indicator-active-indicator-color: var(--primary-color);
+}
+
+.chat-settings-dialog-panel .mat-mdc-tab-header {
+  border-bottom: 1px solid var(--border-color);
+}

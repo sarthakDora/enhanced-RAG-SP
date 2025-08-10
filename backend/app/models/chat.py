@@ -14,6 +14,7 @@ class ChatMessage(BaseModel):
     sources: Optional[List[DocumentSearchResult]] = None
     confidence_score: Optional[float] = None
     processing_time_ms: Optional[float] = None
+    prompt: Optional[str] = None  # The actual prompt sent to LLM
     
     # Metadata
     metadata: Dict[str, Any] = {}
@@ -84,6 +85,9 @@ class ChatResponse(BaseModel):
     # Session info
     message_count: int
     session_active: bool
+    
+    # Prompt information
+    prompt: Optional[str] = None  # The actual prompt sent to LLM
 
 class ChatHistoryRequest(BaseModel):
     session_id: str

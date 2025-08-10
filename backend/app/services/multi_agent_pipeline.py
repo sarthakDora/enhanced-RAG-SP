@@ -234,14 +234,18 @@ QUERY ANALYSIS: The user is asking about """ + query + """
 CONTEXT ANALYSIS: Based on the retrieved documents, provide a comprehensive response using available information."""
 
     async def generate_response(self, query: str, category: QueryCategory, 
-                              context_docs: List[Dict], conversation_history: List[Dict] = None) -> Dict[str, Any]:
+                              context_docs: List[Dict], conversation_history: List[Dict] = None, 
+                              custom_prompts: Dict[str, str] = None) -> Dict[str, Any]:
         """Generate a detailed response using category-specific structured prompts"""
         try:
             # Prepare context from documents
             context_text = self._build_structured_context(context_docs, category)
             
-            # Get category-specific system prompt
-            system_prompt = self.get_category_specific_prompt(category, query, context_docs)
+            # Get category-specific system prompt (using custom prompts if available)
+            if custom_prompts and custom_prompts.get('system_prompt'):
+                system_prompt = custom_prompts['system_prompt']
+            else:
+                system_prompt = self.get_category_specific_prompt(category, query, context_docs)
             
             # Build the main prompt
             main_prompt = f"""
@@ -278,7 +282,8 @@ Generate a comprehensive response:"""
                 "response": response["response"],
                 "category": category.value,
                 "context_docs_used": len(context_docs),
-                "generation_method": "category_specific_structured"
+                "generation_method": "category_specific_structured",
+                "prompt": response.get("prompt", "Prompt not available")
             }
             
         except Exception as e:
@@ -333,7 +338,7 @@ class MultiAgentPipeline:
         self.context_retriever.document_metadata_cache = metadata_cache
         
     async def process_query(self, query: str, conversation_history: List[Dict] = None, 
-                          search_params: Dict = None) -> Dict[str, Any]:
+                          search_params: Dict = None, custom_prompts: Dict[str, str] = None) -> Dict[str, Any]:
         """Process query through the complete multi-agent pipeline"""
         start_time = time.time()
         pipeline_metadata = {
@@ -401,7 +406,8 @@ class MultiAgentPipeline:
                 query=query,
                 category=category,
                 context_docs=context_docs,
-                conversation_history=conversation_history
+                conversation_history=conversation_history,
+                custom_prompts=custom_prompts
             )
             
             stage3_time = time.time() - stage3_start
@@ -432,6 +438,7 @@ class MultiAgentPipeline:
                 "confidence": min(0.95, categorization_confidence + 0.1) if context_docs else 0.3,
                 "total_agents_used": 3,
                 "processing_time": total_time,
+                "prompt": response_data.get("prompt", "Prompt not available"),
                 "agent_responses": [
                     {"agent": "categorization", "success": True, "confidence": categorization_confidence, "result": category.value},
                     {"agent": "context_retrieval", "success": len(context_docs) > 0, "confidence": 0.8, "documents": len(context_docs)},

@@ -149,4 +149,28 @@ export class ApiService {
       this.checkConnectionStatus();
     }, 30000);
   }
+
+  // Settings API
+  getSettings(sessionId?: string): Observable<any> {
+    const params = new HttpParams();
+    if (sessionId) {
+      params.set('session_id', sessionId);
+    }
+    return this.http.get(`${this.baseUrl}/settings`, { params });
+  }
+
+  updateSettings(settings: any, sessionId?: string): Observable<any> {
+    const params = new HttpParams();
+    if (sessionId) {
+      params.set('session_id', sessionId);
+    }
+    return this.http.post(`${this.baseUrl}/settings`, settings, { 
+      params,
+      headers: this.getHeaders() 
+    });
+  }
+
+  getDefaultPrompts(): Observable<any> {
+    return this.http.get(`${this.baseUrl}/settings/prompts/defaults`);
+  }
 }

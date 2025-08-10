@@ -10,6 +10,7 @@ export interface ChatMessage {
   sources?: DocumentSearchResult[];
   confidence_score?: number;
   processing_time_ms?: number;
+  prompt?: string; // The actual prompt sent to the LLM
   
   metadata?: { [key: string]: any };
 }
@@ -72,6 +73,8 @@ export interface ChatResponse {
   
   message_count: number;
   session_active: boolean;
+  
+  prompt?: string; // The actual prompt sent to the LLM
 }
 
 export interface TypingIndicator {

@@ -1,4 +1,4 @@
-import { Component, OnInit, OnDestroy, ViewChild, ElementRef, AfterViewChecked } from '@angular/core';
+import { Component, OnInit, OnDestroy, ViewChild, ElementRef, AfterViewChecked, AfterViewInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatInputModule } from '@angular/material/input';
@@ -8,7 +8,7 @@ import { MatCardModule } from '@angular/material/card';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSnackBar } from '@angular/material/snack-bar';
-import { MatDialog } from '@angular/material/dialog';
+import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatMenuModule } from '@angular/material/menu';
 import { MatSelectModule } from '@angular/material/select';
@@ -18,6 +18,8 @@ import { Subscription } from 'rxjs';
 import { ApiService } from '../../services/api.service';
 import { ChatMessage, ChatResponse, ChatSession, ChatRequest } from '../../models/chat.model';
 import { DocumentSearchResult, DocumentType } from '../../models/document.model';
+import { PromptDialogComponent } from './prompt-dialog.component';
+import { ChatSettingsDialogComponent } from './chat-settings-dialog.component';
 
 @Component({
   selector: 'app-chat',
@@ -34,7 +36,8 @@ import { DocumentSearchResult, DocumentType } from '../../models/document.model'
     MatTooltipModule,
     MatMenuModule,
     MatSelectModule,
-    MatFormFieldModule
+    MatFormFieldModule,
+    MatDialogModule
   ],
   template: `
     <div class="chat-container fade-in">
@@ -90,6 +93,15 @@ import { DocumentSearchResult, DocumentType } from '../../models/document.model'
 
       <!-- Chat Messages -->
       <div class="chat-messages" #chatContainer>
+        <!-- Scroll to bottom button -->
+        <button *ngIf="!shouldAutoScroll" 
+                class="scroll-to-bottom-btn glass-button"
+                (click)="scrollToBottomManual()"
+                mat-fab
+                color="primary">
+          <mat-icon>keyboard_arrow_down</mat-icon>
+        </button>
+        
         <div class="messages-list">
           <!-- Welcome Message -->
           <div *ngIf="messages.length === 0" class="welcome-message glass-card slide-up">
@@ -141,9 +153,17 @@ import { DocumentSearchResult, DocumentType } from '../../models/document.model'
               <div class="message-header">
                 <mat-icon class="assistant-icon">smart_toy</mat-icon>
                 <span class="assistant-name">Financial AI</span>
-                <div class="confidence-indicator" [class]="getConfidenceClass(message.confidence_score)">
-                  <mat-icon>{{ getConfidenceIcon(message.confidence_score) }}</mat-icon>
-                  <span>{{ getConfidenceText(message.confidence_score) }}</span>
+                <div class="header-actions">
+                  <button mat-icon-button 
+                          class="prompt-button glass-button"
+                          (click)="showPrompt(message)"
+                          matTooltip="View prompt sent to LLM">
+                    <mat-icon>code</mat-icon>
+                  </button>
+                  <div class="confidence-indicator" [class]="getConfidenceClass(message.confidence_score)">
+                    <mat-icon>{{ getConfidenceIcon(message.confidence_score) }}</mat-icon>
+                    <span>{{ getConfidenceText(message.confidence_score) }}</span>
+                  </div>
                 </div>
               </div>
               
@@ -364,6 +384,23 @@ import { DocumentSearchResult, DocumentType } from '../../models/document.model'
       flex: 1;
       overflow-y: auto;
       padding: 0 8px;
+      position: relative;
+    }
+
+    .scroll-to-bottom-btn {
+      position: absolute !important;
+      bottom: 20px;
+      right: 20px;
+      z-index: 1000;
+      width: 48px !important;
+      height: 48px !important;
+      min-width: 48px !important;
+      animation: fadeIn 0.3s ease-in-out;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: scale(0.8); }
+      to { opacity: 1; transform: scale(1); }
     }
 
     .messages-list {
@@ -458,11 +495,38 @@ import { DocumentSearchResult, DocumentType } from '../../models/document.model'
       color: var(--text-primary);
     }
 
-    .confidence-indicator {
+    .header-actions {
       display: flex;
       align-items: center;
       gap: 4px;
       margin-left: auto;
+    }
+
+    .prompt-button {
+      color: var(--text-secondary) !important;
+      opacity: 0.7;
+      transition: all 0.3s ease;
+      width: 32px !important;
+      height: 32px !important;
+      min-width: 32px !important;
+    }
+
+    .prompt-button:hover {
+      opacity: 1;
+      color: var(--accent-color) !important;
+      background: rgba(255, 255, 255, 0.1) !important;
+    }
+
+    .prompt-button mat-icon {
+      font-size: 16px;
+      width: 16px;
+      height: 16px;
+    }
+
+    .confidence-indicator {
+      display: flex;
+      align-items: center;
+      gap: 4px;
       padding: 4px 8px;
       border-radius: 8px;
       font-size: 12px;
@@ -772,7 +836,7 @@ import { DocumentSearchResult, DocumentType } from '../../models/document.model'
     }
   `]
 })
-export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
+export class ChatComponent implements OnInit, OnDestroy, AfterViewInit, AfterViewChecked {
   @ViewChild('chatContainer') chatContainer!: ElementRef;
   @ViewChild('messageInput') messageInput!: ElementRef;
   @ViewChild('fileInput') fileInput!: ElementRef;
@@ -782,7 +846,11 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
   currentSession: ChatSession | null = null;
   isLoading = false;
   isTyping = false;
-  showSettings = false;
+  
+  // Scroll management
+  private isUserScrolling = false;
+  shouldAutoScroll = true; // Made public for template access
+  private scrollThreshold = 100;
 
   // Document type selection
   selectedDocumentType: string = '';
@@ -807,12 +875,29 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
     this.startNewSession();
   }
 
+  ngAfterViewInit() {
+    if (this.chatContainer) {
+      const element = this.chatContainer.nativeElement;
+      
+      // Add scroll event listener to detect user scrolling
+      element.addEventListener('scroll', this.onScroll.bind(this), { passive: true });
+      
+      // Add wheel event listener to detect when user starts scrolling
+      element.addEventListener('wheel', this.onUserScroll.bind(this), { passive: true });
+      
+      // Add touch events for mobile scrolling detection
+      element.addEventListener('touchstart', this.onUserScroll.bind(this), { passive: true });
+    }
+  }
+
   ngOnDestroy() {
     this.subscriptions.forEach(sub => sub.unsubscribe());
   }
 
   ngAfterViewChecked() {
-    this.scrollToBottom();
+    if (this.shouldAutoScroll && !this.isUserScrolling) {
+      this.scrollToBottom();
+    }
   }
 
   trackMessage(index: number, message: ChatMessage): string {
@@ -862,6 +947,10 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
     this.messages.push(userMessage);
     this.isLoading = true;
     this.isTyping = true;
+    
+    // Enable auto-scroll for new messages
+    this.shouldAutoScroll = true;
+    this.isUserScrolling = false;
 
     try {
       // Upload files first if any are attached
@@ -892,7 +981,8 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
         timestamp: new Date().toISOString(),
         sources: response.sources,
         confidence_score: response.confidence_score,
-        processing_time_ms: response.total_time_ms
+        processing_time_ms: response.total_time_ms,
+        prompt: response.prompt
       };
 
       this.messages.push(assistantMessage);
@@ -913,7 +1003,21 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
   }
 
   toggleSettings() {
-    this.showSettings = !this.showSettings;
+    const dialogRef = this.dialog.open(ChatSettingsDialogComponent, {
+      width: '700px',
+      maxWidth: '95vw',
+      maxHeight: '90vh',
+      data: { sessionId: this.currentSession?.session_id },
+      panelClass: 'chat-settings-dialog-panel'
+    });
+
+    dialogRef.afterClosed().subscribe(result => {
+      if (result?.saved) {
+        console.log('Chat settings updated:', result.settings);
+        // Settings are automatically applied on the backend side
+        // No need to reload the page or do anything else
+      }
+    });
   }
 
   openSourceDetails(source: DocumentSearchResult) {
@@ -974,9 +1078,55 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
     return content.startsWith('Source:') || content.length < 50;
   }
 
-  private scrollToBottom() {
+  onScroll(event: Event) {
+    if (!this.chatContainer) return;
+    
+    const element = this.chatContainer.nativeElement;
+    const scrollTop = element.scrollTop;
+    const scrollHeight = element.scrollHeight;
+    const clientHeight = element.clientHeight;
+    
+    // Check if user is near the bottom (within threshold)
+    const isNearBottom = (scrollHeight - scrollTop - clientHeight) < this.scrollThreshold;
+    
+    if (isNearBottom) {
+      this.shouldAutoScroll = true;
+      this.isUserScrolling = false;
+    } else {
+      this.shouldAutoScroll = false;
+    }
+  }
+
+  onUserScroll(event: Event) {
+    // User initiated scroll action
+    this.isUserScrolling = true;
+    this.shouldAutoScroll = false;
+    
+    // Reset the user scrolling flag after a delay
+    setTimeout(() => {
+      this.isUserScrolling = false;
+    }, 1000);
+  }
+
+  scrollToBottomManual() {
+    // Manually scroll to bottom and enable auto-scroll
+    this.shouldAutoScroll = true;
+    this.isUserScrolling = false;
+    
     try {
       if (this.chatContainer) {
+        const element = this.chatContainer.nativeElement;
+        element.scrollTo({
+          top: element.scrollHeight,
+          behavior: 'smooth'
+        });
+      }
+    } catch (err) {}
+  }
+
+  private scrollToBottom() {
+    try {
+      if (this.chatContainer && this.shouldAutoScroll) {
         const element = this.chatContainer.nativeElement;
         element.scrollTop = element.scrollHeight;
       }
@@ -1125,5 +1275,21 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
       'other': 'Other'
     };
     return typeNames[type] || 'Unknown';
+  }
+
+  showPrompt(message: ChatMessage): void {
+    const promptText = message.prompt || 'Prompt information not available for this response.';
+    
+    this.dialog.open(PromptDialogComponent, {
+      width: '80vw',
+      maxWidth: '800px',
+      maxHeight: '80vh',
+      data: {
+        prompt: promptText
+      },
+      panelClass: ['prompt-dialog-panel'],
+      hasBackdrop: true,
+      disableClose: false
+    });
   }
 }

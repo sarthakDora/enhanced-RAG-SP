@@ -20,6 +20,9 @@ from .multi_agent_pipeline import MultiAgentPipeline
 
 logger = logging.getLogger(__name__)
 
+# Import settings functions
+from ..routers.settings import get_current_settings
+
 class ChatService:
     def __init__(self, ollama_service: OllamaService, qdrant_service: QdrantService):
         self.ollama_service = ollama_service
@@ -76,6 +79,17 @@ class ChatService:
         """Process a chat request and generate response"""
         start_time = time.time()
         
+        # Get custom prompts from settings if enabled
+        settings = get_current_settings(request.session_id)
+        custom_prompts = None
+        if settings.prompts.use_custom_prompts:
+            custom_prompts = {
+                'system_prompt': settings.prompts.system_prompt,
+                'query_prompt': settings.prompts.query_prompt,
+                'response_format_prompt': settings.prompts.response_format_prompt
+            }
+            logger.info(f"Using custom prompts for session {request.session_id}")
+        
         # Get or create session
         if request.session_id:
             session = await self.get_session(request.session_id)
@@ -120,7 +134,7 @@ class ChatService:
             # Process based on routing decision
             generation_start = time.time()
             agent_response = await self._process_by_routing_decision(
-                classification, request, session, conversation_history, generation_start
+                classification, request, session, conversation_history, generation_start, custom_prompts
             )
             
             # Continue with existing logic...
@@ -168,6 +182,7 @@ class ChatService:
                 confidence_score=response_data.get("agent_metadata", {}).get("confidence", 
                     self._calculate_response_confidence(sources, response_data["response"])),
                 processing_time_ms=generation_time,
+                prompt=agent_response.get("prompt", "Prompt not available"),
                 metadata=response_data.get("agent_metadata", {})
             )
             session.messages.append(assistant_message)
@@ -194,7 +209,8 @@ class ChatService:
                 source_count=len(sources),
                 context_used=bool(context_documents),
                 message_count=len(session.messages),
-                session_active=session.is_active
+                session_active=session.is_active,
+                prompt=agent_response.get("prompt", "Prompt not available")
             )
             
             logger.info(f"Chat response generated for session {session.session_id} in {total_time:.2f}ms")
@@ -216,6 +232,16 @@ class ChatService:
 
     async def chat_stream(self, request: ChatRequest) -> AsyncGenerator[str, None]:
         """Stream chat response"""
+        # Get custom prompts from settings if enabled
+        settings = get_current_settings(request.session_id)
+        custom_prompts = None
+        if settings.prompts.use_custom_prompts:
+            custom_prompts = {
+                'system_prompt': settings.prompts.system_prompt,
+                'query_prompt': settings.prompts.query_prompt,
+                'response_format_prompt': settings.prompts.response_format_prompt
+            }
+        
         # Get or create session (similar to chat method)
         if request.session_id:
             session = await self.get_session(request.session_id)
@@ -258,7 +284,7 @@ class ChatService:
                 context=context,
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
-                system_prompt=self._get_financial_system_prompt()
+                system_prompt=self._get_financial_system_prompt(custom_prompts)
             ):
                 collected_response += chunk
                 yield chunk
@@ -271,7 +297,8 @@ class ChatService:
                 content=collected_response,
                 timestamp=datetime.now(),
                 sources=sources,
-                confidence_score=self._calculate_response_confidence(sources, collected_response)
+                confidence_score=self._calculate_response_confidence(sources, collected_response),
+                prompt="[Streaming response - prompt not captured in this mode]"
             )
             session.messages.append(assistant_message)
             
@@ -385,8 +412,11 @@ class ChatService:
         
         return "\n".join(context_parts)
 
-    def _get_financial_system_prompt(self) -> str:
+    def _get_financial_system_prompt(self, custom_prompts: Dict[str, str] = None) -> str:
         """Get system prompt optimized for financial document analysis"""
+        if custom_prompts and custom_prompts.get('system_prompt'):
+            return custom_prompts['system_prompt']
+        
         return """You are a buy-side performance attribution commentator for an institutional asset manager.
 Your audience is portfolio managers and senior analysts.
 Write concise, evidence-based commentary grounded ONLY in the provided context (tables, derived stats, and metadata).
@@ -682,7 +712,7 @@ Always be transparent about your information sources and limitations."""
     
     async def _process_by_routing_decision(self, classification: Dict[str, Any], request: ChatRequest, 
                                          session: ChatSession, conversation_history: List[Dict], 
-                                         generation_start: float) -> Dict[str, Any]:
+                                         generation_start: float, custom_prompts: Dict[str, str] = None) -> Dict[str, Any]:
         """Process query based on router's classification"""
         routing_decision = classification["routing_decision"]
         query_type = classification["query_type"]
@@ -701,6 +731,7 @@ Always be transparent about your information sources and limitations."""
                     "sources": [],
                     "total_agents_used": 1,
                     "processing_time": (time.time() - generation_start),
+                    "prompt": f"SYSTEM: Personal information storage handler\n\nUSER: {request.message}\n\nASSISTANT:",
                     "agent_responses": [{"agent": "personal_info_handler", "success": True, "confidence": 0.95}]
                 }
             
@@ -714,32 +745,33 @@ Always be transparent about your information sources and limitations."""
                     "sources": [],
                     "total_agents_used": 1,
                     "processing_time": (time.time() - generation_start),
+                    "prompt": f"SYSTEM: Personalized greeting handler\n\nUSER: {request.message}\n\nASSISTANT:",
                     "agent_responses": [{"agent": "greeting_handler", "success": True, "confidence": 0.9}]
                 }
             
             elif routing_decision == "knowledge_base_search":
                 # Handle document/knowledge base queries with fallback
                 try:
-                    return await self._handle_knowledge_base_query(request, conversation_history, generation_start)
+                    return await self._handle_knowledge_base_query(request, conversation_history, generation_start, custom_prompts)
                 except Exception as e:
                     logger.error(f"Knowledge base query failed, falling back to general query: {e}")
-                    return await self._handle_general_query(request, conversation_history, generation_start, with_memory=False)
+                    return await self._handle_general_query(request, conversation_history, generation_start, with_memory=False, custom_prompts=custom_prompts)
             
             elif routing_decision == "conversational_with_context":
                 # Handle conversational follow-ups
                 use_rag = classification.get("requires_rag", False)
                 if use_rag:
                     try:
-                        return await self._handle_knowledge_base_query(request, conversation_history, generation_start)
+                        return await self._handle_knowledge_base_query(request, conversation_history, generation_start, custom_prompts)
                     except Exception as e:
                         logger.error(f"RAG query failed, falling back to general query: {e}")
-                        return await self._handle_general_query(request, conversation_history, generation_start, with_memory=True)
+                        return await self._handle_general_query(request, conversation_history, generation_start, with_memory=True, custom_prompts=custom_prompts)
                 else:
                     return await self._handle_general_query(request, conversation_history, generation_start, with_memory=True)
             
             else:  # general_knowledge
                 # Handle general knowledge queries
-                return await self._handle_general_query(request, conversation_history, generation_start)
+                return await self._handle_general_query(request, conversation_history, generation_start, custom_prompts=custom_prompts)
                 
         except Exception as e:
             logger.error(f"Route processing failed for {routing_decision}: {e}")
@@ -750,11 +782,12 @@ Always be transparent about your information sources and limitations."""
                 "sources": [],
                 "total_agents_used": 1,
                 "processing_time": (time.time() - generation_start),
+                "prompt": f"SYSTEM: Error fallback handler\n\nUSER: {request.message}\n\nASSISTANT:",
                 "agent_responses": [{"agent": "error_fallback", "success": False, "confidence": 0.1, "error": str(e)}]
             }
     
     async def _handle_knowledge_base_query(self, request: ChatRequest, conversation_history: List[Dict], 
-                                         generation_start: float) -> Dict[str, Any]:
+                                         generation_start: float, custom_prompts: Dict[str, str] = None) -> Dict[str, Any]:
         """Handle queries that require knowledge base/document search using multi-agent pipeline"""
         try:
             # Check if we have any uploaded documents
@@ -818,6 +851,7 @@ Always be transparent about your information sources and limitations."""
                     "sources": [],
                     "total_agents_used": 1,
                     "processing_time": (time.time() - generation_start),
+                    "prompt": f"SYSTEM: No documents guard handler\n\nUSER: {request.message}\n\nASSISTANT:",
                     "agent_responses": [{"agent": "no_documents_guard", "success": True, "confidence": 1.0}]
                 }
             else:
@@ -837,7 +871,8 @@ Always be transparent about your information sources and limitations."""
             pipeline_result = await self.multi_agent_pipeline.process_query(
                 query=request.message,
                 conversation_history=conversation_history,
-                search_params=search_params
+                search_params=search_params,
+                custom_prompts=custom_prompts
             )
             
             logger.info(f"Multi-agent pipeline completed - Category: {pipeline_result.get('category')}, Sources: {len(pipeline_result.get('sources', []))}")
@@ -852,11 +887,12 @@ Always be transparent about your information sources and limitations."""
                 "sources": [],
                 "total_agents_used": 1,
                 "processing_time": (time.time() - generation_start),
+                "prompt": f"SYSTEM: Pipeline error handler\n\nUSER: {request.message}\n\nASSISTANT:",
                 "agent_responses": [{"agent": "pipeline_error_handler", "success": False, "confidence": 0.1, "error": str(e)}]
             }
     
     async def _handle_general_query(self, request: ChatRequest, conversation_history: List[Dict], 
-                                  generation_start: float, with_memory: bool = False) -> Dict[str, Any]:
+                                  generation_start: float, with_memory: bool = False, custom_prompts: Dict[str, str] = None) -> Dict[str, Any]:
         """Handle general knowledge queries"""
         try:
             # Get personal context if memory is enabled
@@ -866,7 +902,7 @@ Always be transparent about your information sources and limitations."""
                 if personal_info.get("name"):
                     personal_context = f"Remember that the user's name is {personal_info['name']}. "
             
-            system_prompt = self._get_financial_system_prompt() + f"\n\nIMPORTANT: This is a general knowledge question. Be clear that your response is not based on specific documents. {personal_context}"
+            system_prompt = self._get_financial_system_prompt(custom_prompts) + f"\n\nIMPORTANT: This is a general knowledge question. Be clear that your response is not based on specific documents. {personal_context}"
             
             direct_response = await self.ollama_service.generate_response(
                 prompt=request.message,
@@ -883,6 +919,7 @@ Always be transparent about your information sources and limitations."""
                 "sources": [],
                 "total_agents_used": 1,
                 "processing_time": (time.time() - generation_start),
+                "prompt": direct_response.get("prompt", "Prompt not available"),
                 "agent_responses": [{"agent": "general_knowledge", "success": True, "confidence": 0.7}]
             }
             
@@ -894,5 +931,6 @@ Always be transparent about your information sources and limitations."""
                 "sources": [],
                 "total_agents_used": 1,
                 "processing_time": (time.time() - generation_start),
+                "prompt": f"SYSTEM: General query error handler\n\nUSER: {request.message}\n\nASSISTANT:",
                 "agent_responses": [{"agent": "error_handler", "success": False, "confidence": 0.1}]
             }

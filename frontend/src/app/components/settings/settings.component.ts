@@ -8,6 +8,24 @@ import { MatSliderModule } from '@angular/material/slider';
 import { MatSelectModule } from '@angular/material/select';
 import { MatInputModule } from '@angular/material/input';
 import { MatSlideToggleModule } from '@angular/material/slide-toggle';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { ApiService } from '../../services/api.service';
+
+interface ChatSettings {
+  temperature: number;
+  max_tokens: number;
+  use_rag: boolean;
+  top_k: number;
+  rerank_top_k: number;
+  similarity_threshold: number;
+  reranking_strategy: string;
+  prompts: {
+    use_custom_prompts: boolean;
+    system_prompt: string;
+    query_prompt: string;
+    response_format_prompt: string;
+  };
+}
 
 @Component({
   selector: 'app-settings',
@@ -21,7 +39,8 @@ import { MatSlideToggleModule } from '@angular/material/slide-toggle';
     MatSliderModule,
     MatSelectModule,
     MatInputModule,
-    MatSlideToggleModule
+    MatSlideToggleModule,
+    MatFormFieldModule
   ],
   template: `
     <div class="settings-container fade-in">
@@ -53,7 +72,7 @@ import { MatSlideToggleModule } from '@angular/material/slide-toggle';
           <mat-form-field appearance="outline">
             <input matInput 
                    type="number" 
-                   [(ngModel)]="settings.maxTokens"
+                   [(ngModel)]="settings.max_tokens"
                    min="100"
                    max="4000">
           </mat-form-field>
@@ -62,7 +81,7 @@ import { MatSlideToggleModule } from '@angular/material/slide-toggle';
         <div class="setting-item">
           <label>Enable RAG</label>
           <p class="setting-description">Use document retrieval to enhance responses</p>
-          <mat-slide-toggle [(ngModel)]="settings.useRAG"></mat-slide-toggle>
+          <mat-slide-toggle [(ngModel)]="settings.use_rag"></mat-slide-toggle>
         </div>
       </div>
 
@@ -76,7 +95,7 @@ import { MatSlideToggleModule } from '@angular/material/slide-toggle';
           <mat-form-field appearance="outline">
             <input matInput 
                    type="number" 
-                   [(ngModel)]="settings.topK"
+                   [(ngModel)]="settings.top_k"
                    min="1"
                    max="50">
           </mat-form-field>
@@ -88,7 +107,7 @@ import { MatSlideToggleModule } from '@angular/material/slide-toggle';
           <mat-form-field appearance="outline">
             <input matInput 
                    type="number" 
-                   [(ngModel)]="settings.rerankTopK"
+                   [(ngModel)]="settings.rerank_top_k"
                    min="1"
                    max="20">
           </mat-form-field>
@@ -101,23 +120,41 @@ import { MatSlideToggleModule } from '@angular/material/slide-toggle';
             [min]="0" 
             [max]="1" 
             [step]="0.05" 
-            [(ngModel)]="settings.similarityThreshold">
-            <input matSliderThumb [(ngModel)]="settings.similarityThreshold">
+            [(ngModel)]="settings.similarity_threshold">
+            <input matSliderThumb [(ngModel)]="settings.similarity_threshold">
           </mat-slider>
-          <span class="setting-value">{{ settings.similarityThreshold }}</span>
+          <span class="setting-value">{{ settings.similarity_threshold }}</span>
         </div>
 
         <div class="setting-item">
           <label>Reranking Strategy</label>
           <p class="setting-description">Method used to rerank search results</p>
           <mat-form-field appearance="outline">
-            <mat-select [(ngModel)]="settings.rerankingStrategy">
+            <mat-select [(ngModel)]="settings.reranking_strategy">
               <mat-option value="semantic">Semantic</mat-option>
               <mat-option value="metadata">Metadata</mat-option>
               <mat-option value="financial">Financial</mat-option>
               <mat-option value="hybrid">Hybrid</mat-option>
             </mat-select>
           </mat-form-field>
+        </div>
+      </div>
+
+      <!-- Prompt Settings Info -->
+      <div class="settings-section glass-card">
+        <h3><mat-icon>code</mat-icon> Prompt Settings</h3>
+        <div class="info-message">
+          <mat-icon>info</mat-icon>
+          <div>
+            <h4>Chat-Specific Prompt Customization</h4>
+            <p>Prompt settings for performance attribution analysis are now available directly in each chat session. Click the settings button (⚙️) in any chat to customize prompts for that conversation.</p>
+            <p><strong>Benefits:</strong></p>
+            <ul>
+              <li>Session-specific prompt customization</li>
+              <li>Real-time prompt updates</li>
+              <li>Performance attribution focused defaults</li>
+            </ul>
+          </div>
         </div>
       </div>
 
@@ -301,57 +338,155 @@ import { MatSlideToggleModule } from '@angular/material/slide-toggle';
         width: 100%;
       }
 
+      .textarea-field {
+        width: 100%;
+      }
+
+      .textarea-field textarea {
+        min-height: 80px;
+        font-family: 'Courier New', monospace;
+        font-size: 13px;
+        line-height: 1.4;
+      }
+
+      .prompt-actions {
+        display: flex;
+        gap: 12px;
+        margin-top: 16px;
+        flex-wrap: wrap;
+      }
+
       .info-grid {
         grid-template-columns: 1fr;
       }
     }
+
+    .info-message {
+      display: flex;
+      gap: 16px;
+      align-items: flex-start;
+      padding: 16px;
+      background: rgba(59, 130, 246, 0.1);
+      border: 1px solid rgba(59, 130, 246, 0.2);
+      border-radius: 8px;
+      color: var(--text-primary);
+    }
+
+    .info-message mat-icon {
+      color: #3b82f6;
+      margin-top: 2px;
+    }
+
+    .info-message h4 {
+      margin: 0 0 8px 0;
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .info-message p {
+      margin: 0 0 8px 0;
+      line-height: 1.5;
+    }
+
+    .info-message ul {
+      margin: 8px 0 0 16px;
+      padding: 0;
+    }
+
+    .info-message li {
+      margin-bottom: 4px;
+      line-height: 1.4;
+    }
   `]
 })
 export class SettingsComponent implements OnInit {
-  settings = {
+  settings: ChatSettings = {
     temperature: 0.1,
-    maxTokens: 1000,
-    useRAG: true,
-    topK: 10,
-    rerankTopK: 3,
-    similarityThreshold: 0.7,
-    rerankingStrategy: 'hybrid'
+    max_tokens: 1000,
+    use_rag: true,
+    top_k: 10,
+    rerank_top_k: 3,
+    similarity_threshold: 0.7,
+    reranking_strategy: 'hybrid',
+    prompts: {
+      use_custom_prompts: false,
+      system_prompt: '',
+      query_prompt: '',
+      response_format_prompt: ''
+    }
   };
 
   isConnected = true;
   lastUpdated = new Date().toLocaleDateString();
 
-  constructor() {}
+  constructor(private apiService: ApiService) {}
 
   ngOnInit() {
     this.loadSettings();
   }
 
   loadSettings() {
-    const saved = localStorage.getItem('ragSettings');
-    if (saved) {
-      this.settings = { ...this.settings, ...JSON.parse(saved) };
-    }
+    this.apiService.getSettings().subscribe({
+      next: (response) => {
+        this.settings = response;
+        console.log('Settings loaded from backend:', this.settings);
+      },
+      error: (error) => {
+        console.error('Failed to load settings from backend, using defaults:', error);
+        // Load default performance attribution prompts
+        this.loadDefaultPrompts();
+      }
+    });
+  }
+
+  loadDefaultPrompts() {
+    this.apiService.getDefaultPrompts().subscribe({
+      next: (response) => {
+        this.settings.prompts.system_prompt = response.system_prompt;
+        this.settings.prompts.query_prompt = response.query_prompt;
+        this.settings.prompts.response_format_prompt = response.response_format_prompt;
+        console.log('Default prompts loaded:', response);
+      },
+      error: (error) => {
+        console.error('Failed to load default prompts:', error);
+      }
+    });
   }
 
   saveSettings() {
-    localStorage.setItem('ragSettings', JSON.stringify(this.settings));
-    // Show success message
-    console.log('Settings saved:', this.settings);
+    this.apiService.updateSettings(this.settings).subscribe({
+      next: (response) => {
+        console.log('Settings saved successfully:', response);
+        // Show success message to user
+      },
+      error: (error) => {
+        console.error('Failed to save settings:', error);
+        // Show error message to user
+      }
+    });
   }
 
   resetSettings() {
     this.settings = {
       temperature: 0.1,
-      maxTokens: 1000,
-      useRAG: true,
-      topK: 10,
-      rerankTopK: 3,
-      similarityThreshold: 0.7,
-      rerankingStrategy: 'hybrid'
+      max_tokens: 1000,
+      use_rag: true,
+      top_k: 10,
+      rerank_top_k: 3,
+      similarity_threshold: 0.7,
+      reranking_strategy: 'hybrid',
+      prompts: {
+        use_custom_prompts: false,
+        system_prompt: '',
+        query_prompt: '',
+        response_format_prompt: ''
+      }
     };
+    this.loadDefaultPrompts();
     this.saveSettings();
   }
+
 
   exportSettings() {
     const dataStr = JSON.stringify(this.settings, null, 2);
