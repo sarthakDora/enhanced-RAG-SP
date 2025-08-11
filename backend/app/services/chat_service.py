@@ -17,6 +17,7 @@ from .reranking_service import MultiStrategyReranker
 from .agent_orchestrator import MultiAgentOrchestrator
 from .router_service import RouterService, QueryType
 from .multi_agent_pipeline import MultiAgentPipeline
+from .attribution_prompt_service import AttributionPromptService, AttributionMode, AssetClass
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,9 @@ class ChatService:
         
         # Initialize multi-agent pipeline
         self.multi_agent_pipeline = MultiAgentPipeline(ollama_service, qdrant_service)
+        
+        # Initialize attribution prompt service
+        self.attribution_prompt_service = AttributionPromptService()
         
         # In-memory storage for sessions (in production, use a database)
         self.sessions: Dict[str, ChatSession] = {}
@@ -797,6 +801,7 @@ Guidelines:
             # Always let the pipeline try - it can search Qdrant directly even if metadata cache is empty
             
             logger.info(f"Processing knowledge base query with multi-agent pipeline: '{request.message}'")
+            logger.info(f"Commentary mode enabled: {request.commentary_mode}")
             
             # Check if this is a performance attribution query
             performance_keywords = ['performance', 'attribution', 'contributor', 'detractor', 'q2', '2025', 'top', 'best', 'worst']
@@ -843,12 +848,28 @@ Guidelines:
             
             print(f"DEBUG: Search params: {search_params}")
             
-            pipeline_result = await self.multi_agent_pipeline.process_query(
-                query=request.message,
-                conversation_history=conversation_history,
-                search_params=search_params,
-                custom_prompts=custom_prompts
-            )
+            # Check for attribution mode handling - trigger for any query when performance attribution is selected
+            if request.document_type == "performance_attribution":
+                if request.commentary_mode:
+                    logger.info("🔷 ATTRIBUTION_COMMENTARY: Using structured commentary generation mode")
+                    logger.info(f"   📊 Query: {request.message[:100]}...")
+                    pipeline_result = await self._handle_attribution_commentary(
+                        request, conversation_history, search_params, custom_prompts
+                    )
+                else:
+                    logger.info("🔶 ATTRIBUTION_Q&A: Using document search Q&A mode")
+                    logger.info(f"   ❓ Query: {request.message[:100]}...")
+                    pipeline_result = await self._handle_attribution_qa(
+                        request, conversation_history, search_params, custom_prompts
+                    )
+            else:
+                # Normal pipeline processing for non-attribution queries
+                pipeline_result = await self.multi_agent_pipeline.process_query(
+                    query=request.message,
+                    conversation_history=conversation_history,
+                    search_params=search_params,
+                    custom_prompts=custom_prompts
+                )
             
             logger.info(f"Multi-agent pipeline completed - Category: {pipeline_result.get('category')}, Sources: {len(pipeline_result.get('sources', []))}")
             
@@ -912,4 +933,195 @@ Guidelines:
                 "processing_time": (time.time() - generation_start),
                 "prompt": f"SYSTEM: General query error handler\n\nUSER: {request.message}\n\nASSISTANT:",
                 "agent_responses": [{"agent": "error_handler", "success": False, "confidence": 0.1}]
+            }
+    
+    async def _handle_attribution_commentary(self, request: ChatRequest, conversation_history: List[Dict], 
+                                           search_params: Dict[str, Any], custom_prompts: Dict[str, str] = None) -> Dict[str, Any]:
+        """Handle attribution commentary mode with specialized prompts"""
+        try:
+            start_time = time.time()
+            
+            # First, search for relevant chunks
+            sources = await self._search_documents(request, await self.get_session(request.session_id))
+            
+            if not sources:
+                logger.warning("No sources found for attribution commentary")
+                return {
+                    "answer": "I couldn't find any attribution documents to analyze. Please upload an attribution report first.",
+                    "confidence": 0.1,
+                    "sources": [],
+                    "total_agents_used": 1,
+                    "processing_time": (time.time() - start_time),
+                    "prompt": "No documents found for attribution analysis",
+                    "agent_responses": [{"agent": "attribution_handler", "success": False, "confidence": 0.1}]
+                }
+            
+            # Convert sources to format expected by attribution prompt service
+            document_chunks = []
+            for source in sources:
+                document_chunks.append({
+                    'filename': source.document_metadata.filename if source.document_metadata else 'Unknown Document',
+                    'content': source.content,
+                    'document_type': source.document_metadata.document_type if source.document_metadata else 'unknown'
+                })
+            
+            # Detect asset class from document content
+            asset_class_str = self.attribution_prompt_service.detect_asset_class(document_chunks)
+            if asset_class_str == "equity":
+                asset_class = AssetClass.EQUITY
+            elif asset_class_str == "fixed_income":
+                asset_class = AssetClass.FIXED_INCOME
+            else:
+                asset_class = AssetClass.UNKNOWN
+            
+            logger.info(f"ATTRIBUTION_COMMENTARY: Detected asset class: {asset_class_str}")
+            
+            # Assemble specialized attribution prompt
+            attribution_prompt = self.attribution_prompt_service.assemble_prompt(
+                mode=AttributionMode.COMMENTARY,
+                asset_class=asset_class,
+                document_chunks=document_chunks,
+                user_query=request.message
+            )
+            
+            logger.info(f"ATTRIBUTION_COMMENTARY: Generated specialized prompt (length: {len(attribution_prompt)} chars)")
+            
+            # Generate response using the specialized prompt
+            settings = get_current_settings(request.session_id)
+            response_data = await self.ollama_service.generate_response(
+                prompt=request.message,
+                context="",  # Context is built into the attribution prompt
+                temperature=request.temperature or settings.temperature,
+                max_tokens=request.max_tokens or settings.max_tokens,
+                system_prompt=attribution_prompt
+            )
+            
+            return {
+                "answer": response_data["response"],
+                "confidence": 0.9,  # High confidence for structured commentary
+                "sources": [
+                    {
+                        'filename': chunk['filename'],
+                        'content': f"Source: {chunk['filename']}",
+                        'document_type': chunk.get('document_type', 'unknown'),
+                        'confidence': 0.9
+                    }
+                    for chunk in document_chunks[:5]  # Limit to top 5 sources
+                ],
+                "total_agents_used": 1,
+                "processing_time": (time.time() - start_time),
+                "prompt": attribution_prompt,
+                "agent_responses": [{"agent": "attribution_commentary", "success": True, "confidence": 0.9, "asset_class": asset_class_str}]
+            }
+            
+        except Exception as e:
+            logger.error(f"Attribution commentary processing failed: {e}")
+            return {
+                "answer": "I encountered an error while generating attribution commentary. Please try again.",
+                "confidence": 0.1,
+                "sources": [],
+                "total_agents_used": 1,
+                "processing_time": (time.time() - start_time if 'start_time' in locals() else 0),
+                "prompt": "Attribution commentary error",
+                "agent_responses": [{"agent": "attribution_error", "success": False, "confidence": 0.1, "error": str(e)}]
+            }
+    
+    async def _handle_attribution_qa(self, request: ChatRequest, conversation_history: List[Dict], 
+                                   search_params: Dict[str, Any], custom_prompts: Dict[str, str] = None) -> Dict[str, Any]:
+        """Handle attribution Q&A mode - always search documents and send context to LLM"""
+        try:
+            start_time = time.time()
+            
+            logger.info("ATTRIBUTION_Q&A: Starting Q&A mode with document search")
+            
+            # Create a modified request that disables performance attribution mode
+            # This ensures we use normal document search instead of performance attribution pipeline
+            qa_request = ChatRequest(
+                session_id=request.session_id,
+                message=request.message,
+                document_type=request.document_type,
+                commentary_mode=False,  # Ensure this is false for Q&A
+                use_rag=True,  # Always use RAG for Q&A
+                top_k=search_params.get('top_k', 10),
+                rerank_top_k=search_params.get('rerank_top_k', 3),
+                similarity_threshold=search_params.get('similarity_threshold', 0.3),  # Lower threshold for more results
+                reranking_strategy=search_params.get('reranking_strategy', 'hybrid'),
+                temperature=request.temperature,
+                max_tokens=request.max_tokens
+            )
+            
+            # Search for relevant documents using normal document search
+            session = await self.get_session(request.session_id)
+            sources = await self._search_documents(qa_request, session)
+            
+            if not sources:
+                logger.warning("No sources found for Q&A - trying broader search")
+                # Try with even lower threshold
+                qa_request.similarity_threshold = 0.1
+                sources = await self._search_documents(qa_request, session)
+            
+            if not sources:
+                return {
+                    "answer": "I couldn't find any documents to answer your question. Please upload some documents first.",
+                    "confidence": 0.1,
+                    "sources": [],
+                    "total_agents_used": 1,
+                    "processing_time": (time.time() - start_time),
+                    "prompt": "No documents found for Q&A",
+                    "agent_responses": [{"agent": "attribution_qa", "success": False, "confidence": 0.1}]
+                }
+            
+            logger.info(f"ATTRIBUTION_Q&A: Found {len(sources)} sources for Q&A")
+            
+            # Build context from document sources
+            context = self._build_context(sources, session)
+            
+            # Use simple Q&A system prompt
+            system_prompt = """You are a data analyst. Answer questions based only on the provided context from the uploaded document. 
+If the answer is not in the document, say so.
+Be concise and precise. Use numbers, dates, and references exactly as in the context.
+Focus on providing specific answers to the user's question."""
+            
+            # Add asset-class specific guidance if it's performance attribution
+            if request.document_type == "performance_attribution":
+                system_prompt += """
+
+When answering about performance attribution data:
+- Focus on specific sectors, countries, or securities mentioned
+- Include exact attribution effects and percentages when available
+- Mention allocation vs selection effects when relevant
+- Reference specific time periods covered in the data"""
+            
+            logger.info(f"ATTRIBUTION_Q&A: Using context length: {len(context)} chars")
+            
+            # Generate response using normal document context
+            settings = get_current_settings(request.session_id)
+            response_data = await self.ollama_service.generate_response(
+                prompt=request.message,
+                context=context,  # Send actual document context
+                temperature=request.temperature or settings.temperature,
+                max_tokens=request.max_tokens or settings.max_tokens,
+                system_prompt=system_prompt
+            )
+            
+            return {
+                "answer": response_data["response"],
+                "confidence": 0.8,  # Good confidence for Q&A with sources
+                "sources": sources,  # Return actual DocumentSearchResult objects
+                "total_agents_used": 1,
+                "processing_time": (time.time() - start_time),
+                "prompt": response_data.get("prompt", system_prompt),
+                "agent_responses": [{"agent": "document_qa", "success": True, "confidence": 0.8, "sources_found": len(sources)}]
+            }
+            
+        except Exception as e:
+            logger.error(f"Attribution Q&A processing failed: {e}")
+            return {
+                "answer": "I encountered an error while processing your question. Please try again.",
+                "confidence": 0.1,
+                "sources": [],
+                "total_agents_used": 1,
+                "processing_time": (time.time() - start_time if 'start_time' in locals() else 0),
+                "prompt": "Attribution Q&A error",
+                "agent_responses": [{"agent": "attribution_qa_error", "success": False, "confidence": 0.1, "error": str(e)}]
             }

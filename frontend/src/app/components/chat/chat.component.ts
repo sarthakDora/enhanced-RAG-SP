@@ -13,6 +13,7 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatMenuModule } from '@angular/material/menu';
 import { MatSelectModule } from '@angular/material/select';
 import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 import { Subscription } from 'rxjs';
 
 import { ApiService } from '../../services/api.service';
@@ -37,7 +38,8 @@ import { ChatSettingsDialogComponent } from './chat-settings-dialog.component';
     MatMenuModule,
     MatSelectModule,
     MatFormFieldModule,
-    MatDialogModule
+    MatDialogModule,
+    MatSlideToggleModule
   ],
   template: `
     <div class="chat-container fade-in">
@@ -45,7 +47,15 @@ import { ChatSettingsDialogComponent } from './chat-settings-dialog.component';
       <div class="chat-header glass-card">
         <div class="session-info">
           <h2 class="gradient-text">{{ currentSession?.title || 'New Conversation' }}</h2>
-          <p class="text-muted">Financial AI Assistant</p>
+          <p class="text-muted">
+            Financial AI Assistant
+            <span *ngIf="selectedDocumentType === 'performance_attribution'" 
+                  class="mode-indicator"
+                  [class.commentary-active]="commentaryMode"
+                  [class.qa-active]="!commentaryMode">
+              • {{ commentaryMode ? 'Commentary Mode' : 'Q&A Mode' }}
+            </span>
+          </p>
           
           <!-- Document Type Selection -->
           <div class="document-type-selection" *ngIf="currentSession">
@@ -71,6 +81,20 @@ import { ChatSettingsDialogComponent } from './chat-settings-dialog.component';
                     [title]="'Clear ' + getDocumentTypeName(selectedDocumentType) + ' documents'">
               <mat-icon>clear_all</mat-icon>
             </button>
+          </div>
+          
+          <!-- Commentary Mode Toggle -->
+          <div class="commentary-mode-section" *ngIf="currentSession && selectedDocumentType === 'performance_attribution'">
+            <mat-slide-toggle 
+              [(ngModel)]="commentaryMode" 
+              class="commentary-toggle"
+              (change)="onCommentaryModeChange($event.checked)">
+              <span class="toggle-label">Generate Commentary</span>
+            </mat-slide-toggle>
+            <p class="toggle-description">
+              <strong>{{ commentaryMode ? 'Commentary Mode:' : 'Q&A Mode:' }}</strong>
+              {{ commentaryMode ? 'Generate structured attribution analysis with Executive Summary, Performance Overview, and detailed attribution breakdowns.' : 'Ask specific questions about the uploaded documents. Example: "What was the best performing sector?" or "Show me attribution effects for Technology."' }}
+            </p>
           </div>
         </div>
         
@@ -288,7 +312,7 @@ import { ChatSettingsDialogComponent } from './chat-settings-dialog.component';
                    [(ngModel)]="currentMessage" 
                    (keydown.enter)="sendMessage()"
                    [disabled]="isLoading"
-                   placeholder="Ask about your financial documents..."
+                   [placeholder]="getInputPlaceholder()"
                    #messageInput>
           </mat-form-field>
           
@@ -327,19 +351,21 @@ import { ChatSettingsDialogComponent } from './chat-settings-dialog.component';
     .chat-container {
       display: flex;
       flex-direction: column;
-      height: calc(100vh - 120px);
+      height: calc(100vh - 80px);
       max-width: 1200px;
       margin: 0 auto;
-      gap: 16px;
+      gap: 12px;
+      padding: 8px;
     }
 
     .chat-header {
       display: flex;
       justify-content: space-between;
       align-items: flex-start;
-      padding: 20px 24px;
+      padding: 16px 20px;
       margin-bottom: 0;
       gap: 16px;
+      flex-shrink: 0;
     }
 
     .session-info h2 {
@@ -354,6 +380,28 @@ import { ChatSettingsDialogComponent } from './chat-settings-dialog.component';
       font-size: 14px;
       color: var(--text-secondary) !important;
       font-weight: 500;
+    }
+
+    .mode-indicator {
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-left: 8px;
+    }
+
+    .mode-indicator.commentary-active {
+      background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+      color: white;
+      box-shadow: 0 2px 4px rgba(79, 172, 254, 0.3);
+    }
+
+    .mode-indicator.qa-active {
+      background: rgba(108, 117, 125, 0.1);
+      color: #6c757d;
+      border: 1px solid rgba(108, 117, 125, 0.3);
     }
 
     .document-type-selection {
@@ -387,8 +435,12 @@ import { ChatSettingsDialogComponent } from './chat-settings-dialog.component';
     .chat-messages {
       flex: 1;
       overflow-y: auto;
-      padding: 0 8px;
+      padding: 0 12px;
       position: relative;
+      min-height: 0;
+      background: rgba(0, 0, 0, 0.02);
+      border-radius: 12px;
+      border: 1px solid rgba(0, 0, 0, 0.05);
     }
 
     .scroll-to-bottom-btn {
@@ -410,8 +462,9 @@ import { ChatSettingsDialogComponent } from './chat-settings-dialog.component';
     .messages-list {
       display: flex;
       flex-direction: column;
-      gap: 16px;
-      padding: 16px 0;
+      gap: 20px;
+      padding: 20px 0;
+      min-height: 100%;
     }
 
     .welcome-message {
@@ -761,6 +814,9 @@ import { ChatSettingsDialogComponent } from './chat-settings-dialog.component';
     .chat-input {
       padding: 16px 20px;
       margin-top: auto;
+      flex-shrink: 0;
+      background: var(--glass-primary);
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
     }
 
     .input-container {
@@ -892,31 +948,120 @@ import { ChatSettingsDialogComponent } from './chat-settings-dialog.component';
       border-radius: 4px;
     }
 
+    /* Commentary Mode Toggle Styles */
+    .commentary-mode-section {
+      margin-top: 16px;
+      padding: 16px;
+      background: linear-gradient(135deg, rgba(79, 172, 254, 0.08) 0%, rgba(0, 242, 254, 0.08) 100%);
+      border-radius: 12px;
+      border: 1px solid rgba(79, 172, 254, 0.2);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+    }
+
+    .commentary-toggle {
+      margin-bottom: 12px;
+    }
+
+    .commentary-toggle .mat-slide-toggle-bar {
+      background-color: rgba(255, 255, 255, 0.2);
+    }
+
+    .commentary-toggle.mat-checked .mat-slide-toggle-bar {
+      background-color: #4facfe;
+    }
+
+    .toggle-label {
+      font-weight: 600;
+      margin-left: 8px;
+      color: var(--text-primary);
+      font-size: 14px;
+    }
+
+    .toggle-description {
+      margin: 0;
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+      background: rgba(255, 255, 255, 0.8);
+      padding: 8px 12px;
+      border-radius: 8px;
+      border-left: 3px solid #4facfe;
+    }
+
+    .toggle-description strong {
+      color: #4facfe;
+    }
+
     /* Responsive Design */
     @media (max-width: 768px) {
       .chat-container {
-        height: calc(100vh - 80px);
+        height: calc(100vh - 60px);
         gap: 8px;
+        padding: 4px;
+      }
+
+      .chat-header {
+        padding: 12px 16px;
       }
 
       .message {
-        max-width: 90%;
+        max-width: 92%;
         padding: 12px 16px;
       }
 
       .welcome-message {
-        padding: 24px 20px;
-        margin: 20px 8px;
+        padding: 20px 16px;
+        margin: 16px 4px;
       }
 
       .quick-actions {
         flex-direction: column;
+        gap: 8px;
       }
 
       .quick-action {
         width: 100%;
         justify-content: center;
+        padding: 10px 16px;
       }
+
+      .commentary-mode-section {
+        margin-top: 12px;
+        padding: 12px;
+      }
+
+      .toggle-description {
+        font-size: 12px;
+        padding: 6px 10px;
+      }
+
+      .chat-messages {
+        padding: 0 8px;
+      }
+
+      .messages-list {
+        gap: 16px;
+        padding: 16px 0;
+      }
+    }
+
+    /* Scrollbar Styling */
+    .chat-messages::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    .chat-messages::-webkit-scrollbar-track {
+      background: rgba(0, 0, 0, 0.05);
+      border-radius: 3px;
+    }
+
+    .chat-messages::-webkit-scrollbar-thumb {
+      background: rgba(79, 172, 254, 0.3);
+      border-radius: 3px;
+    }
+
+    .chat-messages::-webkit-scrollbar-thumb:hover {
+      background: rgba(79, 172, 254, 0.5);
     }
   `]
 })
@@ -939,6 +1084,9 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewInit, AfterVie
   // Document type selection
   selectedDocumentType: string = '';
   uploadDocumentType: string = 'other';
+  
+  // Commentary mode toggle
+  commentaryMode: boolean = false;
 
   // File attachment properties
   attachedFiles: File[] = [];
@@ -1069,8 +1217,15 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewInit, AfterVie
         similarity_threshold: currentSettings.similarity_threshold,
         reranking_strategy: currentSettings.reranking_strategy,
         temperature: currentSettings.temperature,
-        max_tokens: currentSettings.max_tokens
+        max_tokens: currentSettings.max_tokens,
+        commentary_mode: this.commentaryMode // Add commentary mode flag
       };
+
+      console.log('Sending chat request:', {
+        document_type: chatRequest.document_type,
+        commentary_mode: chatRequest.commentary_mode,
+        message: chatRequest.message.substring(0, 50) + '...'
+      });
 
       const response: ChatResponse = await this.apiService.sendMessage(chatRequest).toPromise();
       
@@ -1397,5 +1552,66 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewInit, AfterVie
       hasBackdrop: true,
       disableClose: false
     });
+  }
+
+  onCommentaryModeChange(enabled: boolean) {
+    this.commentaryMode = enabled;
+    console.log('Commentary mode changed:', enabled ? 'ON (Commentary)' : 'OFF (Q&A)');
+    console.log('Current document type:', this.selectedDocumentType);
+    console.log('Current commentary mode state:', this.commentaryMode);
+    
+    // Auto-adjust chat settings based on commentary mode
+    this.adjustChatSettingsForMode(enabled);
+  }
+
+  private async adjustChatSettingsForMode(commentaryMode: boolean) {
+    if (!this.currentSession?.session_id || this.selectedDocumentType !== 'performance_attribution') {
+      return;
+    }
+
+    try {
+      // Get current settings
+      const currentSettings = await this.apiService.getSettings(this.currentSession.session_id).toPromise();
+      
+      // Adjust performance attribution mode in settings
+      const updatedSettings = {
+        ...currentSettings,
+        use_rag: true,  // Always enable RAG for both modes
+        prompts: {
+          ...currentSettings.prompts,
+          use_custom_prompts: commentaryMode  // Enable for commentary, disable for Q&A
+        }
+      };
+
+      // Update settings
+      await this.apiService.updateSettings(updatedSettings, this.currentSession.session_id).toPromise();
+      
+      console.log('Auto-updated chat settings:', {
+        commentary_mode: commentaryMode,
+        use_custom_prompts: updatedSettings.prompts.use_custom_prompts
+      });
+      
+      // Show user feedback
+      if (commentaryMode) {
+        this.showSuccess('📊 Commentary Mode: Will generate structured attribution analysis');
+      } else {
+        this.showSuccess('❓ Q&A Mode: Will search documents and answer specific questions');
+      }
+      
+    } catch (error) {
+      console.error('Failed to update chat settings:', error);
+      this.showError('Failed to update chat settings. Please check settings manually.');
+    }
+  }
+
+  getInputPlaceholder(): string {
+    if (this.selectedDocumentType === 'performance_attribution') {
+      if (this.commentaryMode) {
+        return 'Request attribution commentary (e.g., "Analyze Q2 2025 attribution")';
+      } else {
+        return 'Ask specific questions (e.g., "What was the best performing sector?")';
+      }
+    }
+    return 'Ask about your financial documents...';
   }
 }

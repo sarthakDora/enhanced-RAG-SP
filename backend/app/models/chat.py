@@ -52,6 +52,9 @@ class ChatRequest(BaseModel):
     # Document type selection for focused search
     document_type: Optional[DocumentType] = None
     
+    # Attribution mode toggle
+    commentary_mode: bool = False
+    
     # Search parameters
     use_rag: bool = True
     top_k: int = Field(default=10, le=50)

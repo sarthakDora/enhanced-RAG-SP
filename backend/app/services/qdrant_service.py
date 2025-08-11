@@ -33,6 +33,9 @@ class QdrantService:
             "general_docs": f"{settings.COLLECTION_NAME}_general"
         }
         
+        # Session-based collections for uploaded documents
+        self.session_collections = {}  # Format: {session_id: collection_name}
+        
     async def health_check(self) -> bool:
         """Check if Qdrant is accessible"""
         try:
@@ -631,3 +634,169 @@ class QdrantService:
         except Exception as e:
             logger.error(f"Failed to get all points: {e}")
             return []
+
+    async def create_session_collection(self, session_id: str) -> str:
+        """Create a session-specific collection for uploaded documents"""
+        try:
+            session_collection_name = f"attribution_{session_id}"
+            
+            # Create the collection
+            await self.create_collection(session_collection_name)
+            
+            # Store the mapping
+            self.session_collections[session_id] = session_collection_name
+            
+            logger.info(f"Created session collection: {session_collection_name}")
+            return session_collection_name
+            
+        except Exception as e:
+            logger.error(f"Failed to create session collection for {session_id}: {e}")
+            raise
+
+    async def get_session_collection(self, session_id: str) -> Optional[str]:
+        """Get the collection name for a session"""
+        if session_id in self.session_collections:
+            return self.session_collections[session_id]
+        return None
+
+    async def store_session_documents(self, session_id: str, chunks: List[DocumentChunk], 
+                                    document_metadata: 'DocumentMetadata' = None) -> bool:
+        """Store document chunks in session-specific collection"""
+        try:
+            # Get or create session collection
+            session_collection = await self.get_session_collection(session_id)
+            if not session_collection:
+                session_collection = await self.create_session_collection(session_id)
+            
+            # Store chunks in session collection
+            points = []
+            for chunk in chunks:
+                if not chunk.embedding:
+                    logger.warning(f"Chunk {chunk.chunk_id} has no embedding, skipping")
+                    continue
+                
+                # Session-specific payload
+                payload = {
+                    "document_id": str(chunk.document_id),
+                    "content": str(chunk.content),
+                    "chunk_index": int(chunk.chunk_index),
+                    "session_id": session_id,
+                    "page_number": int(chunk.page_number) if chunk.page_number else 1,
+                    "contains_financial_data": bool(chunk.contains_financial_data),
+                    "confidence_score": float(chunk.confidence_score) if chunk.confidence_score else 0.5,
+                    "filename": document_metadata.filename if document_metadata else f"document_{str(chunk.document_id)[:8]}.txt",
+                    "document_type": document_metadata.document_type if document_metadata else "other",
+                    "upload_timestamp": document_metadata.upload_timestamp.isoformat() if document_metadata and hasattr(document_metadata, 'upload_timestamp') else datetime.now().isoformat(),
+                }
+                
+                point = PointStruct(
+                    id=str(chunk.chunk_id),
+                    vector=[float(x) for x in chunk.embedding],
+                    payload=payload
+                )
+                points.append(point)
+            
+            # Upsert to session collection
+            if points:
+                self.client.upsert(
+                    collection_name=session_collection,
+                    points=points
+                )
+                logger.info(f"Stored {len(points)} chunks in session collection {session_collection}")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Failed to store session documents for {session_id}: {e}")
+            raise
+
+    async def search_session_collection(self, session_id: str, query_embedding: List[float], 
+                                       top_k: int = 10) -> List[DocumentSearchResult]:
+        """Search within a session-specific collection"""
+        try:
+            session_collection = await self.get_session_collection(session_id)
+            if not session_collection:
+                logger.warning(f"No session collection found for {session_id}")
+                return []
+            
+            if not await self.collection_exists(session_collection):
+                logger.warning(f"Session collection {session_collection} does not exist")
+                return []
+            
+            # Search in session collection
+            search_results = self.client.search(
+                collection_name=session_collection,
+                query_vector=query_embedding,
+                limit=top_k,
+                with_payload=True
+            )
+            
+            # Convert to DocumentSearchResult objects
+            results = []
+            for result in search_results:
+                payload = result.payload
+                
+                # Create document metadata
+                from ..models.document import DocumentMetadata, DocumentType
+                doc_metadata = DocumentMetadata(
+                    filename=payload.get("filename", "Unknown Document"),
+                    file_size=1000,
+                    file_type=".txt",
+                    document_type=DocumentType.OTHER,
+                    upload_timestamp=datetime.now(),
+                    total_pages=1,
+                    total_chunks=1,
+                    has_financial_data=payload.get("has_financial_data", False),
+                    confidence_score=payload.get("confidence_score", result.score)
+                )
+                
+                search_result = DocumentSearchResult(
+                    chunk_id=str(result.id),
+                    document_id=payload.get("document_id", "unknown"),
+                    content=payload.get("content", ""),
+                    score=result.score,
+                    confidence_level=self._get_confidence_level(result.score),
+                    document_metadata=doc_metadata,
+                    chunk_metadata={
+                        "page_number": payload.get("page_number", 1),
+                        "contains_financial_data": payload.get("contains_financial_data", False),
+                        "confidence_score": payload.get("confidence_score", result.score)
+                    },
+                    page_number=payload.get("page_number", 1)
+                )
+                results.append(search_result)
+            
+            logger.info(f"Found {len(results)} results in session collection {session_collection}")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Failed to search session collection for {session_id}: {e}")
+            return []
+
+    async def clear_session_collection(self, session_id: str) -> bool:
+        """Clear all documents from a session collection"""
+        try:
+            session_collection = await self.get_session_collection(session_id)
+            if not session_collection:
+                logger.warning(f"No session collection found for {session_id}")
+                return True
+            
+            if await self.collection_exists(session_collection):
+                # Delete the entire collection
+                self.client.delete_collection(session_collection)
+                logger.info(f"Deleted session collection: {session_collection}")
+            
+            # Remove from mapping
+            if session_id in self.session_collections:
+                del self.session_collections[session_id]
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to clear session collection for {session_id}: {e}")
+            return False
+
+    async def list_session_collections(self) -> Dict[str, str]:
+        """List all active session collections"""
+        return self.session_collections.copy()

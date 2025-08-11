@@ -58,6 +58,24 @@ class FinancialDocumentProcessor:
             'performance': ['performance', 'attribution', 'benchmark', 'alpha', 'beta']
         }
         
+        # Asset class detection keywords
+        self.equity_keywords = [
+            'sector', 'gics', 'industry', 'security selection', 
+            'stock', 'equity', 'market cap', 'style', 'value', 'growth',
+            'large cap', 'small cap', 'mid cap', 'sector allocation',
+            'stock picking', 'security specific', 'share price',
+            'dividend yield', 'earnings per share', 'p/e ratio'
+        ]
+        
+        self.fixed_income_keywords = [
+            'duration', 'credit', 'currency', 'country', 'sovereign',
+            'corporate', 'government', 'bond', 'yield', 'fx selection',
+            'interest rate', 'credit quality', 'credit spread',
+            'yield curve', 'maturity', 'coupon', 'fixed income',
+            'treasury', 'municipal', 'high yield', 'investment grade',
+            'credit rating', 'duration risk', 'convexity'
+        ]
+        
     async def process_document(self, file_path: str, document_type: DocumentType, metadata: Dict[str, Any] = None) -> Document:
         """Process a financial document and extract comprehensive metadata"""
         try:
@@ -455,6 +473,11 @@ class FinancialDocumentProcessor:
         elif document_type == DocumentType.PERFORMANCE_ATTRIBUTION:
             metadata.update(self._extract_performance_attribution_metadata(full_text))
             
+            # Detect asset class for attribution documents
+            asset_class = self.detect_asset_class(full_text)
+            metadata['asset_class'] = asset_class
+            logger.info(f"Detected asset class for attribution document: {asset_class}")
+            
             # Enhanced performance attribution processing
             try:
                 attribution_data = self.performance_attribution_service.extract_attribution_data_from_tables(content_data['tables'])
@@ -620,6 +643,31 @@ class FinancialDocumentProcessor:
             metadata['regulations'] = list(set(regulations[:5]))  # Top 5 unique
         
         return metadata
+
+    def detect_asset_class(self, content: str) -> str:
+        """Detect asset class from document content"""
+        try:
+            content_lower = content.lower()
+            
+            # Count equity indicators
+            equity_score = sum(1 for keyword in self.equity_keywords if keyword in content_lower)
+            
+            # Count fixed income indicators  
+            fixed_income_score = sum(1 for keyword in self.fixed_income_keywords if keyword in content_lower)
+            
+            logger.info(f"Asset class detection - Equity score: {equity_score}, Fixed Income score: {fixed_income_score}")
+            
+            # Determine asset class
+            if equity_score > fixed_income_score and equity_score > 0:
+                return "equity"
+            elif fixed_income_score > equity_score and fixed_income_score > 0:
+                return "fixed_income"
+            else:
+                return "unknown"
+                
+        except Exception as e:
+            logger.error(f"Asset class detection failed: {e}")
+            return "unknown"
 
     async def _create_chunks(
         self, 

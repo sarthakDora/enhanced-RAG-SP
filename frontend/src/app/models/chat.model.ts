@@ -45,6 +45,9 @@ export interface ChatRequest {
   // Document type selection for focused search
   document_type?: DocumentType;
   
+  // Attribution mode toggle
+  commentary_mode?: boolean;
+  
   use_rag?: boolean;
   top_k?: number;
   rerank_top_k?: number;
