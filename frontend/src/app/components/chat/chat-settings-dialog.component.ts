@@ -66,14 +66,25 @@ interface ChatSettings {
             
             <div class="tab-content">
               <div class="setting-item">
-                <div class="setting-header">
-                  <mat-slide-toggle [(ngModel)]="settings.prompts.use_custom_prompts">
-                    Use Custom Prompts
-                  </mat-slide-toggle>
+                <div class="prompt-mode-selection">
+                  <div class="mode-option" [class.active]="settings.prompts.use_custom_prompts">
+                    <mat-slide-toggle [(ngModel)]="settings.prompts.use_custom_prompts">
+                      <strong>Performance Attribution Mode</strong>
+                    </mat-slide-toggle>
+                    <p class="mode-description">
+                      Use specialized prompts for institutional performance attribution analysis with consistent formatting and professional terminology.
+                    </p>
+                  </div>
+                  
+                  <div class="mode-option" [class.active]="!settings.prompts.use_custom_prompts">
+                    <div class="mode-info">
+                      <strong>Regular RAG Q&A Mode</strong>
+                      <p class="mode-description">
+                        Standard document-based question answering without specialized prompts. Best for general inquiries and flexible responses.
+                      </p>
+                    </div>
+                  </div>
                 </div>
-                <p class="setting-description">
-                  Enable custom prompts specifically for performance attribution analysis
-                </p>
               </div>
 
               <div class="prompt-settings" *ngIf="settings.prompts.use_custom_prompts">
@@ -348,6 +359,47 @@ interface ChatSettings {
       flex-wrap: wrap;
     }
 
+    .prompt-mode-selection {
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 0;
+      background: var(--surface-color);
+      overflow: hidden;
+    }
+
+    .mode-option {
+      padding: 16px;
+      transition: all 0.3s ease;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .mode-option:last-child {
+      border-bottom: none;
+    }
+
+    .mode-option.active {
+      background: rgba(59, 130, 246, 0.1);
+      border-left: 4px solid #3b82f6;
+    }
+
+    .mode-option strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--text-primary);
+      font-size: 15px;
+    }
+
+    .mode-description {
+      margin: 0;
+      font-size: 13px;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+
+    .mode-info {
+      margin-left: 0;
+    }
+
     .dialog-actions {
       padding: 0 24px 20px 24px;
       display: flex;
@@ -388,7 +440,7 @@ export class ChatSettingsDialogComponent implements OnInit {
     similarity_threshold: 0.7,
     reranking_strategy: 'hybrid',
     prompts: {
-      use_custom_prompts: false,
+      use_custom_prompts: true,  // Enable by default for performance attribution
       system_prompt: '',
       query_prompt: '',
       response_format_prompt: ''
@@ -442,27 +494,87 @@ export class ChatSettingsDialogComponent implements OnInit {
   }
 
   previewCombinedPrompt() {
-    const combinedPrompt = `${this.settings.prompts.system_prompt}\n\n${this.settings.prompts.query_prompt}\n\n${this.settings.prompts.response_format_prompt}`;
+    if (!this.settings.prompts.use_custom_prompts) {
+      return;
+    }
+
+    const systemPrompt = this.settings.prompts.system_prompt.trim();
+    const queryPrompt = this.settings.prompts.query_prompt.trim();
+    const formatPrompt = this.settings.prompts.response_format_prompt.trim();
     
-    // Create a simple preview dialog
+    const combinedPrompt = [
+      systemPrompt ? `=== SYSTEM PROMPT ===\n${systemPrompt}` : '',
+      queryPrompt ? `=== QUERY PROCESSING ===\n${queryPrompt}` : '',
+      formatPrompt ? `=== RESPONSE FORMAT ===\n${formatPrompt}` : ''
+    ].filter(section => section.length > 0).join('\n\n');
+    
+    if (!combinedPrompt.trim()) {
+      alert('No custom prompts to preview. Please configure your prompts first.');
+      return;
+    }
+
+    // Create backdrop
+    const backdrop = document.createElement('div');
+    backdrop.className = 'prompt-preview-backdrop';
+    backdrop.style.cssText = `
+      position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0, 0, 0, 0.5); z-index: 20000;
+      display: flex; align-items: center; justify-content: center;
+      padding: 20px; backdrop-filter: blur(4px);
+    `;
+    
+    // Create dialog
     const dialog = document.createElement('div');
     dialog.style.cssText = `
-      position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-      background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(10px);
-      padding: 20px; border-radius: 12px; max-width: 80vw; max-height: 80vh;
-      overflow-y: auto; z-index: 20000; box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-      border: 1px solid var(--border-color);
+      background: rgba(255, 255, 255, 0.98); backdrop-filter: blur(20px);
+      border-radius: 16px; max-width: 90vw; max-height: 85vh; width: 800px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      display: flex; flex-direction: column; overflow: hidden;
     `;
     
     dialog.innerHTML = `
-      <h3 style="margin: 0 0 16px 0; color: var(--text-primary);">Combined Prompt Preview</h3>
-      <pre style="white-space: pre-wrap; font-family: 'Courier New', monospace; font-size: 13px; line-height: 1.4; background: var(--surface-color); padding: 16px; border-radius: 6px; border: 1px solid var(--border-color);">${combinedPrompt}</pre>
-      <div style="margin-top: 16px; text-align: right;">
-        <button onclick="this.parentElement.parentElement.remove()" style="padding: 8px 16px; background: var(--primary-color); color: white; border: none; border-radius: 6px; cursor: pointer;">Close</button>
+      <div style="padding: 24px 24px 16px; border-bottom: 1px solid rgba(0, 0, 0, 0.1); flex-shrink: 0;">
+        <h3 style="margin: 0; color: #2d3748; display: flex; align-items: center; gap: 12px; font-size: 18px;">
+          <span style="color: #3b82f6;">📋</span>
+          Combined Prompt Preview
+        </h3>
+        <p style="margin: 8px 0 0; color: #718096; font-size: 14px;">
+          This is how your custom prompts will be structured for the LLM
+        </p>
+      </div>
+      <div style="flex: 1; overflow-y: auto; padding: 0;">
+        <pre style="margin: 0; padding: 24px; white-space: pre-wrap; font-family: 'Monaco', 'Menlo', 'Courier New', monospace; font-size: 13px; line-height: 1.5; background: #f8fafc; color: #2d3748; overflow-wrap: break-word;">${combinedPrompt}</pre>
+      </div>
+      <div style="padding: 16px 24px; border-top: 1px solid rgba(0, 0, 0, 0.1); text-align: right; flex-shrink: 0;">
+        <button class="close-preview-btn" style="padding: 10px 20px; background: #3b82f6; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 500; transition: background 0.2s;">
+          Close Preview
+        </button>
       </div>
     `;
     
-    document.body.appendChild(dialog);
+    backdrop.appendChild(dialog);
+    document.body.appendChild(backdrop);
+
+    // Add click handlers
+    backdrop.addEventListener('click', (e) => {
+      if (e.target === backdrop) {
+        document.body.removeChild(backdrop);
+      }
+    });
+
+    dialog.querySelector('.close-preview-btn')?.addEventListener('click', () => {
+      document.body.removeChild(backdrop);
+    });
+
+    // Add escape key handler
+    const escHandler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        document.body.removeChild(backdrop);
+        document.removeEventListener('keydown', escHandler);
+      }
+    };
+    document.addEventListener('keydown', escHandler);
   }
 
   saveSettings() {

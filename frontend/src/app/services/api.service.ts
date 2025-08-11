@@ -152,17 +152,17 @@ export class ApiService {
 
   // Settings API
   getSettings(sessionId?: string): Observable<any> {
-    const params = new HttpParams();
+    let params = new HttpParams();
     if (sessionId) {
-      params.set('session_id', sessionId);
+      params = params.set('session_id', sessionId);
     }
     return this.http.get(`${this.baseUrl}/settings`, { params });
   }
 
   updateSettings(settings: any, sessionId?: string): Observable<any> {
-    const params = new HttpParams();
+    let params = new HttpParams();
     if (sessionId) {
-      params.set('session_id', sessionId);
+      params = params.set('session_id', sessionId);
     }
     return this.http.post(`${this.baseUrl}/settings`, settings, { 
       params,

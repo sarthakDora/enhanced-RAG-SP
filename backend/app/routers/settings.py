@@ -36,7 +36,7 @@ async def get_settings(session_id: Optional[str] = None):
         # Return default settings for performance attribution
         settings_store[key] = ChatSettings(
             prompts=PromptSettings(
-                use_custom_prompts=False,
+                use_custom_prompts=True,  # Enable by default for performance attribution
                 system_prompt=get_default_performance_attribution_prompt(),
                 query_prompt=get_default_query_processing_prompt(),
                 response_format_prompt=get_default_response_format_prompt()
@@ -94,7 +94,47 @@ When analyzing performance attribution data, you must:
 3. **Sector Analysis**: Top 2-3 contributing and 1-2 detracting sectors with specific attribution (pp)
 4. **Risk Items**: Any concerning patterns in attribution (optional, only if data supports)
 
-Always cite specific data points from attribution tables and avoid general market commentary."""
+Always cite specific data points from attribution tables and avoid general market commentary.
+
+## Example Analysis:
+
+**Sample Query:** "Analyze the Q3 2024 performance attribution for the Large Cap Growth portfolio"
+
+**Sample Data Context:**
+```
+Portfolio Return: 2.45%
+Benchmark Return: 1.80%
+Active Return: +0.65pp (65bp)
+
+Sector Attribution:
+- Technology: +0.40pp (Sector: +0.15pp, Security: +0.25pp)
+- Healthcare: +0.20pp (Sector: -0.05pp, Security: +0.25pp) 
+- Financials: -0.10pp (Sector: +0.05pp, Security: -0.15pp)
+- Energy: +0.15pp (Sector: +0.20pp, Security: -0.05pp)
+```
+
+**Expected Response Style:**
+## Executive Summary
+• Portfolio outperformed benchmark by 0.65pp in Q3 2024
+• Primary driver: Security selection effect (+0.45pp)
+• Key contributor: Technology (+0.40pp total attribution)
+• Key detractor: Financials (-0.10pp total attribution)
+
+## Performance Overview
+- **Portfolio Return**: 2.45%
+- **Benchmark Return**: 1.80%
+- **Active Return**: +0.65pp
+- **Total Attribution**: +0.65pp
+
+## Sector Attribution Analysis
+**Top Contributors:**
+1. Technology: +0.40pp (Sector Sel: +0.15pp, Security Sel: +0.25pp)
+2. Healthcare: +0.20pp (Sector Sel: -0.05pp, Security Sel: +0.25pp)
+
+**Key Detractors:**
+1. Financials: -0.10pp (Sector Sel: +0.05pp, Security Sel: -0.15pp)
+
+Follow this exact format and quantification approach for all attribution analysis."""
 
 def get_default_query_processing_prompt() -> str:
     """Get the default query processing instructions"""
@@ -152,7 +192,7 @@ def get_current_settings(session_id: Optional[str] = None) -> ChatSettings:
     if key not in settings_store:
         settings_store[key] = ChatSettings(
             prompts=PromptSettings(
-                use_custom_prompts=False,
+                use_custom_prompts=True,  # Enable by default for performance attribution
                 system_prompt=get_default_performance_attribution_prompt(),
                 query_prompt=get_default_query_processing_prompt(),
                 response_format_prompt=get_default_response_format_prompt()
