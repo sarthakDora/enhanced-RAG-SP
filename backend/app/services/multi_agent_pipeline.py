@@ -1,5 +1,6 @@
 import logging
 import time
+import sys
 from typing import Dict, List, Any, Optional, Tuple
 from enum import Enum
 import json
@@ -96,7 +97,8 @@ class CategoryBasedContextRetriever:
         }
         
     async def retrieve_context(self, query: str, category: QueryCategory, 
-                             top_k: int = 10, similarity_threshold: float = 0.5) -> List[DocumentSearchResult]:
+                             top_k: int = 10, similarity_threshold: float = 0.5,
+                             rerank_top_k: int = 3, reranking_strategy: str = 'hybrid') -> List[DocumentSearchResult]:
         """Retrieve relevant documents based on query and category"""
         target_collection = self.category_collections.get(category, "performance_docs")
         try:
@@ -104,6 +106,7 @@ class CategoryBasedContextRetriever:
             query_embedding = await self.ollama_service.generate_embedding(query)
             
             logger.info(f"Searching in collection: {target_collection} for category: {category.value}")
+            logger.info(f"Available collections: {list(self.category_collections.keys())}")
             
             # Create search request
             search_request = DocumentSearchRequest(
@@ -111,26 +114,63 @@ class CategoryBasedContextRetriever:
                 top_k=top_k,
                 similarity_threshold=similarity_threshold,
                 use_reranking=True,
-                rerank_top_k=min(5, top_k // 2)
+                rerank_top_k=rerank_top_k,
+                reranking_strategy=reranking_strategy
             )
             
-            # Search in the category-specific collection
-            # Check if the target collection exists, fallback to main collection if not
-            if not await self.qdrant_service.collection_exists(target_collection):
-                logger.info(f"Category collection {target_collection} doesn't exist, using main collection")
-                target_collection = self.qdrant_service.collection_name
+            # Search in the category-specific collection first
+            results = []
+            collections_to_try = []
+            
+            # Check if the target collection exists, add to search list
+            if await self.qdrant_service.collection_exists(target_collection):
+                logger.info(f"Category collection {target_collection} exists, searching there first")
+                collections_to_try.append(target_collection)
             else:
-                logger.info(f"Using category-specific collection: {target_collection}")
+                logger.info(f"Category collection {target_collection} doesn't exist")
             
-            results = await self.qdrant_service.search_similar_chunks(
-                query_embedding=query_embedding,
-                search_request=search_request,
-                document_metadata=self.document_metadata_cache,  # Use the metadata cache
-                collection_name=target_collection
-            )
+            # Always add main collection as fallback
+            collections_to_try.append(self.qdrant_service.collection_name)
+            # Also try searching all collections if no results yet  
+            collections_to_try.append(None)  # None means search all collections
             
-            logger.info(f"Retrieved {len(results)} context documents for category {category.value}")
-            return results
+            for collection in collections_to_try:
+                if collection:
+                    logger.info(f"Searching in collection: {collection}")
+                else:
+                    logger.info("Searching across all collections")
+                
+                current_results = await self.qdrant_service.search_similar_chunks(
+                    query_embedding=query_embedding,
+                    search_request=search_request,
+                    document_metadata=self.document_metadata_cache or {},  # Use empty dict if None
+                    collection_name=collection
+                )
+                
+                logger.info(f"Found {len(current_results)} results in this search")
+                results.extend(current_results)
+                
+                # If we found enough results, stop searching
+                if len(results) >= rerank_top_k:
+                    break
+            
+            # Remove duplicates and sort by score
+            seen_ids = set()
+            unique_results = []
+            for result in sorted(results, key=lambda x: x.score, reverse=True):
+                if result.chunk_id not in seen_ids:
+                    unique_results.append(result)
+                    seen_ids.add(result.chunk_id)
+            
+            final_results = unique_results[:top_k]
+            logger.info(f"Final results after deduplication: {len(final_results)} documents for category {category.value}")
+            
+            # DEBUG: Print to stderr so we can see what's happening
+            print(f"CONTEXT_RETRIEVAL_DEBUG: Found {len(final_results)} documents for category {category.value}, query: '{query}'", file=sys.stderr)
+            if not final_results:
+                print(f"CONTEXT_RETRIEVAL_DEBUG: No documents found. Searched {len(collections_to_try)} collections", file=sys.stderr)
+            
+            return final_results
             
         except Exception as e:
             logger.error(f"Context retrieval failed for category {category.value}: {e}")
@@ -235,7 +275,8 @@ CONTEXT ANALYSIS: Based on the retrieved documents, provide a comprehensive resp
 
     async def generate_response(self, query: str, category: QueryCategory, 
                               context_docs: List[Dict], conversation_history: List[Dict] = None, 
-                              custom_prompts: Dict[str, str] = None) -> Dict[str, Any]:
+                              custom_prompts: Dict[str, str] = None, 
+                              temperature: float = 0.7, max_tokens: int = 800) -> Dict[str, Any]:
         """Generate a detailed response using category-specific structured prompts"""
         try:
             # Prepare context from documents
@@ -273,8 +314,8 @@ Generate a comprehensive response:"""
             response = await self.ollama_service.generate_response(
                 prompt=main_prompt,
                 context="",  # Context is now in the main prompt
-                temperature=0.7,
-                max_tokens=800,
+                temperature=temperature,
+                max_tokens=max_tokens,
                 system_prompt=system_prompt
             )
             
@@ -298,8 +339,10 @@ Generate a comprehensive response:"""
     def _build_structured_context(self, context_docs: List[Dict], category: QueryCategory) -> str:
         """Build structured context based on category"""
         if not context_docs:
+            logger.warning("No context documents provided to _build_structured_context")
             return "No relevant documents found."
         
+        logger.info(f"Building structured context from {len(context_docs)} documents")
         context_parts = []
         
         for i, doc in enumerate(context_docs[:5], 1):  # Limit to top 5 docs
@@ -307,12 +350,16 @@ Generate a comprehensive response:"""
             content = doc.get('content', '')
             confidence = doc.get('confidence', 0.0)
             
+            logger.info(f"Adding document {i}: {filename}, content_length={len(content)}, confidence={confidence:.3f}")
+            
             context_parts.append(f"""
 Document {i}: {filename} (Relevance: {confidence:.2f})
 Content: {content}
 """)
         
-        return "\n".join(context_parts)
+        context_text = "\n".join(context_parts)
+        logger.info(f"Built context text with {len(context_text)} characters")
+        return context_text
     
     def _format_conversation_history(self, history: List[Dict]) -> str:
         """Format conversation history for context"""
@@ -371,13 +418,27 @@ class MultiAgentPipeline:
             search_config = search_params or {}
             top_k = search_config.get('top_k', 10)
             similarity_threshold = search_config.get('similarity_threshold', 0.5)
+            rerank_top_k = search_config.get('rerank_top_k', 3)
+            reranking_strategy = search_config.get('reranking_strategy', 'hybrid')
+            temperature = search_config.get('temperature', 0.7)
+            max_tokens = search_config.get('max_tokens', 800)
+            use_rag = search_config.get('use_rag', True)
             
-            context_results = await self.context_retriever.retrieve_context(
-                query=query,
-                category=category,
-                top_k=top_k,
-                similarity_threshold=similarity_threshold
-            )
+            # Only retrieve context if RAG is enabled
+            if use_rag:
+                logger.info(f"Retrieving context: query='{query}', category={category.value}, top_k={top_k}, threshold={similarity_threshold}")
+                context_results = await self.context_retriever.retrieve_context(
+                    query=query,
+                    category=category,
+                    top_k=top_k,
+                    similarity_threshold=similarity_threshold,
+                    rerank_top_k=rerank_top_k,
+                    reranking_strategy=reranking_strategy
+                )
+                logger.info(f"Context retrieval completed: found {len(context_results)} documents")
+            else:
+                logger.info("RAG disabled, skipping context retrieval")
+                context_results = []
             
             # Convert context results to dict format for response generation
             context_docs = []
@@ -400,6 +461,11 @@ class MultiAgentPipeline:
             
             # Stage 3: Response Generation
             logger.info(f"Stage 3: Generating response using {len(context_docs)} context documents")
+            if context_docs:
+                for i, doc in enumerate(context_docs[:2]):  # Log first 2 docs
+                    logger.info(f"  Context doc {i+1}: {doc['filename']}, content_length={len(doc['content'])}, confidence={doc['confidence']:.3f}")
+            else:
+                logger.warning("No context documents available for response generation")
             stage3_start = time.time()
             
             response_data = await self.response_agent.generate_response(
@@ -407,7 +473,9 @@ class MultiAgentPipeline:
                 category=category,
                 context_docs=context_docs,
                 conversation_history=conversation_history,
-                custom_prompts=custom_prompts
+                custom_prompts=custom_prompts,
+                temperature=temperature,
+                max_tokens=max_tokens
             )
             
             stage3_time = time.time() - stage3_start

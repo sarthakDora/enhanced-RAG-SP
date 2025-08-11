@@ -19,9 +19,9 @@
   --glass-dark: rgba(0, 0, 0, 0.1);
   
   /* Text Colors */
-  --text-primary: #2d3748;
-  --text-secondary: #4a5568;
-  --text-muted: #718096;
+  --text-primary: #1a202c;
+  --text-secondary: #2d3748;
+  --text-muted: #4a5568;
   --text-inverse: #ffffff;
   
   /* Background */
@@ -44,6 +44,28 @@ body {
   min-height: 100vh;
   color: var(--text-primary);
   line-height: 1.6;
+}
+
+/* Chat-specific overrides for better text visibility */
+.chat-container .message {
+  color: inherit !important;
+}
+
+.chat-container .assistant-msg {
+  background: #ffffff !important;
+  color: #1a202c !important;
+}
+
+.chat-container .assistant-msg * {
+  color: #1a202c !important;
+}
+
+.chat-container .user-msg {
+  color: #ffffff !important;
+}
+
+.chat-container .user-msg * {
+  color: #ffffff !important;
 }
 
 /* Glassmorphism Components */
@@ -222,7 +244,7 @@ body {
   :root {
     --text-primary: #f7fafc;
     --text-secondary: #e2e8f0;
-    --text-muted: #a0aec0;
+    --text-muted: #cbd5e0;
   }
 }
 
@@ -303,26 +325,255 @@ body {
   max-width: 95vw !important;
   width: 700px !important;
   max-height: 90vh !important;
-  background: rgba(255, 255, 255, 0.95) !important;
-  backdrop-filter: blur(10px) !important;
-  border: 1px solid var(--glass-primary) !important;
+  background: #ffffff !important;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3) !important;
+  border: 1px solid #e2e8f0 !important;
   border-radius: 16px !important;
+  color: #1a202c !important;
 }
 
 .chat-settings-dialog-panel .mat-mdc-dialog-content {
-  color: var(--text-primary) !important;
+  color: #1a202c !important;
   padding: 0 !important;
+  background: #ffffff !important;
 }
 
 .chat-settings-dialog-panel .mat-mdc-dialog-title {
-  color: var(--text-primary) !important;
-  font-weight: 600 !important;
+  color: #1a202c !important;
+  font-weight: 700 !important;
+  font-size: 20px !important;
+  background: #ffffff !important;
 }
 
+.chat-settings-dialog-panel .mat-mdc-dialog-actions {
+  background: #ffffff !important;
+  border-top: 1px solid #e2e8f0 !important;
+  padding: 16px 24px !important;
+}
+
+/* Tab styling */
 .chat-settings-dialog-panel .mat-mdc-tab-group {
-  --mdc-tab-indicator-active-indicator-color: var(--primary-color);
+  --mdc-tab-indicator-active-indicator-color: #667eea !important;
+  background: #ffffff !important;
 }
 
 .chat-settings-dialog-panel .mat-mdc-tab-header {
-  border-bottom: 1px solid var(--border-color);
+  border-bottom: 1px solid #e2e8f0 !important;
+  background: #ffffff !important;
+}
+
+.chat-settings-dialog-panel .mat-mdc-tab-body-wrapper {
+  background: #ffffff !important;
+}
+
+.chat-settings-dialog-panel .mat-mdc-tab-label {
+  color: #4a5568 !important;
+  font-weight: 500 !important;
+}
+
+.chat-settings-dialog-panel .mat-mdc-tab-label.mdc-tab--active {
+  color: #1a202c !important;
+  font-weight: 700 !important;
+}
+
+.chat-settings-dialog-panel .mat-mdc-tab-label:not(.mdc-tab--active):hover {
+  color: #2d3748 !important;
+}
+
+/* Form field styling */
+.chat-settings-dialog-panel .mat-mdc-form-field {
+  color: #1a202c !important;
+}
+
+.chat-settings-dialog-panel .mat-mdc-form-field-label {
+  color: #4a5568 !important;
+  font-weight: 500 !important;
+}
+
+.chat-settings-dialog-panel .mat-mdc-input-element {
+  color: #1a202c !important;
+  font-weight: 400 !important;
+  background: #ffffff !important;
+}
+
+.chat-settings-dialog-panel .mat-mdc-input-element::placeholder {
+  color: #a0aec0 !important;
+}
+
+.chat-settings-dialog-panel .mat-mdc-select-value {
+  color: #1a202c !important;
+  font-weight: 500 !important;
+}
+
+.chat-settings-dialog-panel .mat-mdc-select-placeholder {
+  color: #a0aec0 !important;
+}
+
+.chat-settings-dialog-panel .mat-mdc-select-arrow {
+  color: #4a5568 !important;
+}
+
+/* Slide toggle styling */
+.chat-settings-dialog-panel .mat-mdc-slide-toggle {
+  color: #1a202c !important;
+}
+
+.chat-settings-dialog-panel .mat-mdc-slide-toggle-label {
+  color: #1a202c !important;
+  font-weight: 700 !important;
+  font-size: 16px !important;
+}
+
+.chat-settings-dialog-panel .mat-mdc-slide-toggle .mdc-switch {
+  --mdc-switch-selected-track-color: #667eea;
+  --mdc-switch-selected-handle-color: #ffffff;
+  --mdc-switch-selected-hover-track-color: #5a67d8;
+  --mdc-switch-unselected-track-color: #e2e8f0;
+  --mdc-switch-unselected-handle-color: #ffffff;
+}
+
+/* Button styling */
+.chat-settings-dialog-panel .mat-mdc-button {
+  color: #4a5568 !important;
+  font-weight: 600 !important;
+}
+
+.chat-settings-dialog-panel .mat-mdc-raised-button.mat-primary {
+  background-color: #667eea !important;
+  color: #ffffff !important;
+  font-weight: 600 !important;
+}
+
+.chat-settings-dialog-panel .mat-mdc-stroked-button {
+  border-color: #e2e8f0 !important;
+  color: #4a5568 !important;
+  font-weight: 500 !important;
+}
+
+.chat-settings-dialog-panel .mat-mdc-stroked-button:hover {
+  background-color: #f7fafc !important;
+  border-color: #cbd5e0 !important;
+}
+
+/* Slider styling */
+.chat-settings-dialog-panel .mat-mdc-slider {
+  --mdc-slider-active-track-color: #667eea;
+  --mdc-slider-inactive-track-color: #e2e8f0;
+  --mdc-slider-handle-color: #667eea;
+  --mdc-slider-with-tick-marks-inactive-container-color: #cbd5e0;
+}
+
+.chat-settings-dialog-panel .mat-mdc-slider input {
+  color: #1a202c !important;
+}
+
+/* Icon styling */
+.chat-settings-dialog-panel .mat-icon {
+  color: #4a5568 !important;
+}
+
+.chat-settings-dialog-panel .dialog-header .mat-icon {
+  color: #667eea !important;
+}
+
+/* Textarea styling */
+.chat-settings-dialog-panel textarea {
+  color: #1a202c !important;
+  background-color: #ffffff !important;
+  border: 1px solid #e2e8f0 !important;
+}
+
+.chat-settings-dialog-panel textarea:focus {
+  border-color: #667eea !important;
+  box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.2) !important;
+}
+
+/* Additional Material Design component fixes */
+.chat-settings-dialog-panel .mat-mdc-form-field-outline {
+  color: #e2e8f0 !important;
+}
+
+.chat-settings-dialog-panel .mat-mdc-form-field-outline-thick {
+  color: #667eea !important;
+  opacity: 1 !important;
+}
+
+.chat-settings-dialog-panel .mat-mdc-form-field-focus-overlay {
+  background-color: transparent !important;
+}
+
+.chat-settings-dialog-panel .mdc-text-field--outlined .mdc-text-field__input {
+  color: #1a202c !important;
+  caret-color: #667eea !important;
+}
+
+.chat-settings-dialog-panel .mdc-text-field--outlined.mdc-text-field--focused .mdc-floating-label {
+  color: #667eea !important;
+}
+
+.chat-settings-dialog-panel .mdc-text-field--outlined .mdc-floating-label {
+  color: #4a5568 !important;
+}
+
+/* Select dropdown styling */
+.chat-settings-dialog-panel .mat-mdc-select-panel {
+  background: #ffffff !important;
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 8px !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15) !important;
+}
+
+.chat-settings-dialog-panel .mat-mdc-option {
+  color: #1a202c !important;
+  font-weight: 500 !important;
+}
+
+.chat-settings-dialog-panel .mat-mdc-option:hover {
+  background-color: #f7fafc !important;
+}
+
+.chat-settings-dialog-panel .mat-mdc-option.mdc-list-item--selected {
+  background-color: #667eea !important;
+  color: #ffffff !important;
+}
+
+/* Close button styling */
+.chat-settings-dialog-panel .close-button {
+  color: #4a5568 !important;
+}
+
+.chat-settings-dialog-panel .close-button:hover {
+  background-color: #f7fafc !important;
+  color: #1a202c !important;
+}
+
+/* Loading state */
+.chat-settings-dialog-panel .mat-mdc-button[disabled] {
+  color: #a0aec0 !important;
+  background-color: #f7fafc !important;
+}
+
+/* Ensure all text in dialog is visible */
+.chat-settings-dialog-panel * {
+  color: inherit;
+}
+
+.chat-settings-dialog-panel h1,
+.chat-settings-dialog-panel h2,
+.chat-settings-dialog-panel h3,
+.chat-settings-dialog-panel h4,
+.chat-settings-dialog-panel h5,
+.chat-settings-dialog-panel h6 {
+  color: #1a202c !important;
+}
+
+.chat-settings-dialog-panel p,
+.chat-settings-dialog-panel span,
+.chat-settings-dialog-panel div {
+  color: inherit !important;
+}
+
+.chat-settings-dialog-panel label {
+  color: #1a202c !important;
+  font-weight: 600 !important;
 }

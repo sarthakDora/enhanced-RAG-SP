@@ -276,14 +276,21 @@ class QdrantService:
     ) -> List[DocumentSearchResult]:
         """Search for similar chunks with advanced filtering across all collections"""
         try:
+            logger.info(f"Starting search with query: '{search_request.query[:100]}...'")
+            logger.info(f"Search parameters: top_k={search_request.top_k}, threshold={search_request.similarity_threshold}")
+            if search_request.document_types:
+                logger.info(f"Filtering by document types: {search_request.document_types}")
+            
             all_results = []
             
             # If specific collection is requested, search only that collection
             if collection_name:
                 target_collections = [collection_name]
+                logger.info(f"Searching specific collection: {collection_name}")
             else:
                 # Search across all collections (main + category-specific)
                 target_collections = [self.collection_name] + list(self.category_collections.values())
+                logger.info(f"Searching across collections: {target_collections}")
             
             # Search each collection
             for target_collection in target_collections:
@@ -299,7 +306,14 @@ class QdrantService:
             
             # Sort all results by score and limit to top_k
             all_results.sort(key=lambda x: x.score, reverse=True)
-            return all_results[:search_request.top_k]
+            final_results = all_results[:search_request.top_k]
+            
+            # Log results for debugging
+            logger.info(f"Search completed: {len(final_results)} results returned")
+            for i, result in enumerate(final_results[:3]):  # Log first 3 results
+                logger.info(f"Result {i+1}: score={result.score:.3f}, doc_type={result.document_metadata.document_type if result.document_metadata else 'unknown'}, file={result.document_metadata.filename if result.document_metadata else 'unknown'}")
+            
+            return final_results
             
         except Exception as e:
             logger.error(f"Failed to search chunks: {e}")
@@ -318,8 +332,12 @@ class QdrantService:
             filter_conditions = []
             
             if search_request.document_types:
-                # This would require document_type in payload - we'll need to add this
-                pass
+                filter_conditions.append(
+                    FieldCondition(
+                        key="document_type",
+                        match=Match(any=search_request.document_types)
+                    )
+                )
             
             if search_request.fiscal_years:
                 filter_conditions.append(

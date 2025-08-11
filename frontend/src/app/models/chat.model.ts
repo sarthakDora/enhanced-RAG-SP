@@ -49,6 +49,7 @@ export interface ChatRequest {
   top_k?: number;
   rerank_top_k?: number;
   similarity_threshold?: number;
+  reranking_strategy?: string;
   
   temperature?: number;
   max_tokens?: number;

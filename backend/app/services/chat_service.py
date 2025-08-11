@@ -131,6 +131,14 @@ class ChatService:
             # Generate response context
             response_context = self.router_service.generate_response_context(classification, session.session_id)
             
+            # TEMPORARY FIX: Force knowledge base search for performance attribution queries
+            performance_keywords = ['performance', 'attribution', 'contributor', 'detractor', 'q2', '2025', 'top', 'best', 'worst']
+            query_lower = request.message.lower()
+            if any(keyword in query_lower for keyword in performance_keywords) and request.use_rag:
+                print(f"DEBUG: OVERRIDE - Forcing knowledge base search for: '{request.message}'")
+                logger.info(f"OVERRIDE: Forcing knowledge base search for performance query: '{request.message}'")
+                classification['routing_decision'] = 'knowledge_base_search'
+            
             # Process based on routing decision
             generation_start = time.time()
             agent_response = await self._process_by_routing_decision(
@@ -313,17 +321,20 @@ class ChatService:
     async def _search_documents(self, request: ChatRequest, session: ChatSession) -> List[DocumentSearchResult]:
         """Search for relevant documents"""
         try:
+            # Get settings for this session to use in search
+            settings = get_current_settings(request.session_id)
+            
             # Generate query embedding
             query_embedding = await self.ollama_service.generate_embedding(request.message)
             
-            # Create search request
+            # Create search request using session settings
             search_request = DocumentSearchRequest(
                 query=request.message,
-                top_k=request.top_k,
-                rerank_top_k=request.rerank_top_k,
-                similarity_threshold=request.similarity_threshold,
+                top_k=request.top_k or settings.top_k,
+                rerank_top_k=request.rerank_top_k or settings.rerank_top_k,
+                similarity_threshold=request.similarity_threshold or settings.similarity_threshold,
                 use_reranking=True,
-                reranking_strategy="hybrid"
+                reranking_strategy=request.reranking_strategy or settings.reranking_strategy or "hybrid"
             )
             
             # Apply document type filter from session or request
@@ -345,12 +356,18 @@ class ChatService:
             # Determine target collection based on document type
             target_collection = None
             if document_type_filter:
+                logger.info(f"Filtering by document type: {document_type_filter}")
                 if document_type_filter == "performance_attribution":
                     target_collection = self.qdrant_service.category_collections["performance_docs"]
+                    logger.info(f"Using performance attribution collection: {target_collection}")
                 elif document_type_filter == "financial_report":
                     target_collection = self.qdrant_service.category_collections["technical_docs"]
+                    logger.info(f"Using financial report collection: {target_collection}")
                 elif document_type_filter == "market_analysis":
                     target_collection = self.qdrant_service.category_collections["aum_docs"]
+                    logger.info(f"Using market analysis collection: {target_collection}")
+                else:
+                    logger.info(f"Unknown document type filter: {document_type_filter}, searching all collections")
             
             # Search in Qdrant (specific collection or all collections)
             initial_results = await self.qdrant_service.search_similar_chunks(
@@ -662,10 +679,15 @@ Guidelines:
             
             elif routing_decision == "knowledge_base_search":
                 # Handle document/knowledge base queries with fallback
+                logger.info(f"ROUTING: Taking knowledge_base_search path for query: '{request.message}'")
                 try:
-                    return await self._handle_knowledge_base_query(request, conversation_history, generation_start, custom_prompts)
+                    result = await self._handle_knowledge_base_query(request, conversation_history, generation_start, custom_prompts)
+                    logger.info(f"ROUTING: Knowledge base query returned {len(result.get('sources', []))} sources")
+                    return result
                 except Exception as e:
                     logger.error(f"Knowledge base query failed, falling back to general query: {e}")
+                    import traceback
+                    logger.error(f"Full traceback: {traceback.format_exc()}")
                     return await self._handle_general_query(request, conversation_history, generation_start, with_memory=False, custom_prompts=custom_prompts)
             
             elif routing_decision == "conversational_with_context":
@@ -682,6 +704,7 @@ Guidelines:
             
             else:  # general_knowledge
                 # Handle general knowledge queries
+                logger.info(f"ROUTING: Taking general_knowledge path for query: '{request.message}', routing_decision: {routing_decision}")
                 return await self._handle_general_query(request, conversation_history, generation_start, custom_prompts=custom_prompts)
                 
         except Exception as e:
@@ -730,12 +753,22 @@ Guidelines:
                         for doc_id, chunks in document_chunks.items():
                             try:
                                 first_chunk = chunks[0]
+                                # Parse upload_timestamp properly
+                                upload_ts = first_chunk.get("upload_timestamp")
+                                if isinstance(upload_ts, str):
+                                    try:
+                                        upload_ts = datetime.fromisoformat(upload_ts.replace('Z', '+00:00'))
+                                    except:
+                                        upload_ts = datetime.now()
+                                elif upload_ts is None:
+                                    upload_ts = datetime.now()
+                                
                                 doc_metadata = DocumentMetadata(
                                     filename=first_chunk.get("filename", f"document_{doc_id[:8]}.txt"),
                                     file_size=first_chunk.get("file_size", 1000),
                                     file_type=first_chunk.get("file_type", ".txt"),
                                     document_type=first_chunk.get("document_type", "other"),
-                                    upload_timestamp=first_chunk.get("upload_timestamp", datetime.now().isoformat()),
+                                    upload_timestamp=upload_ts,
                                     total_pages=first_chunk.get("total_pages", 1),
                                     total_chunks=len(chunks),
                                     has_financial_data=first_chunk.get("has_financial_data", False),
@@ -744,6 +777,7 @@ Guidelines:
                                     custom_fields=first_chunk.get("custom_fields", {})
                                 )
                                 self.document_metadata_cache[doc_id] = doc_metadata
+                                logger.info(f"Loaded document {doc_metadata.filename} (type: {doc_metadata.document_type}) from Qdrant sync")
                             except Exception as e:
                                 logger.error(f"Failed to reconstruct metadata for document {doc_id}: {e}")
                                 continue
@@ -754,30 +788,40 @@ Guidelines:
                 except Exception as e:
                     logger.error(f"Emergency sync from Qdrant failed: {e}")
             
-            # Final check after emergency sync
+            # Final check after emergency sync - but allow pipeline to search directly if cache is sparse
             if not self.document_metadata_cache:
-                return {
-                    "answer": "I don't have any documents uploaded to search through. Please upload relevant documents first before asking questions about specific data or reports.\n\nTo upload documents, use the document upload endpoint with financial reports, performance data, or attribution analysis files.",
-                    "confidence": 1.0,
-                    "sources": [],
-                    "total_agents_used": 1,
-                    "processing_time": (time.time() - generation_start),
-                    "prompt": f"SYSTEM: No documents guard handler\n\nUSER: {request.message}\n\nASSISTANT:",
-                    "agent_responses": [{"agent": "no_documents_guard", "success": True, "confidence": 1.0}]
-                }
+                logger.warning("Document metadata cache is empty, but allowing pipeline to search Qdrant directly")
             else:
-                logger.info(f"Proceeding with {len(self.document_metadata_cache)} documents available")
+                logger.info(f"Proceeding with {len(self.document_metadata_cache)} documents in metadata cache")
+            
+            # Always let the pipeline try - it can search Qdrant directly even if metadata cache is empty
             
             logger.info(f"Processing knowledge base query with multi-agent pipeline: '{request.message}'")
             
-            # Ensure pipeline has access to document metadata cache
-            self.multi_agent_pipeline.set_document_metadata_cache(self.document_metadata_cache)
+            # Ensure pipeline has access to document metadata cache (allow empty cache)
+            self.multi_agent_pipeline.set_document_metadata_cache(self.document_metadata_cache or {})
+            
+            # Get session settings for search parameters
+            settings = get_current_settings(request.session_id)
             
             # Use the multi-agent pipeline for intelligent processing
             search_params = {
-                'top_k': request.top_k or 10,
-                'similarity_threshold': request.similarity_threshold or 0.5
+                'top_k': request.top_k or settings.top_k,
+                'rerank_top_k': request.rerank_top_k or settings.rerank_top_k,
+                'similarity_threshold': request.similarity_threshold or settings.similarity_threshold,
+                'reranking_strategy': request.reranking_strategy or settings.reranking_strategy or 'hybrid',
+                'use_rag': request.use_rag if request.use_rag is not None else settings.use_rag,
+                'temperature': request.temperature or settings.temperature,
+                'max_tokens': request.max_tokens or settings.max_tokens
             }
+            
+            # TEMPORARY FIX: Use more permissive search parameters for performance queries
+            if any(keyword in request.message.lower() for keyword in ['performance', 'attribution', 'q2', '2025']):
+                search_params['similarity_threshold'] = min(search_params['similarity_threshold'], 0.3)
+                search_params['top_k'] = max(search_params['top_k'], 10)
+                print(f"DEBUG: Adjusted search params for performance query: threshold={search_params['similarity_threshold']}, top_k={search_params['top_k']}")
+            
+            print(f"DEBUG: Search params: {search_params}")
             
             pipeline_result = await self.multi_agent_pipeline.process_query(
                 query=request.message,
@@ -815,10 +859,14 @@ Guidelines:
             
             system_prompt = self._get_financial_system_prompt(custom_prompts) + f"\n\nIMPORTANT: This is a general knowledge question. Be clear that your response is not based on specific documents. {personal_context}"
             
+            # Get session settings for temperature and max_tokens
+            settings = get_current_settings(request.session_id)
+            
             direct_response = await self.ollama_service.generate_response(
                 prompt=request.message,
                 context="",
-                temperature=request.temperature,
+                temperature=request.temperature or settings.temperature,
+                max_tokens=request.max_tokens or settings.max_tokens,
                 system_prompt=system_prompt
             )
             

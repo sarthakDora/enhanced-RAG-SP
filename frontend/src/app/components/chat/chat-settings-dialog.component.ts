@@ -65,7 +65,7 @@ interface ChatSettings {
             </ng-template>
             
             <div class="tab-content">
-              <div class="setting-item">
+              <div class="setting-item" *ngIf="showPerformanceAttribution">
                 <div class="prompt-mode-selection">
                   <div class="mode-option" [class.active]="settings.prompts.use_custom_prompts">
                     <mat-slide-toggle [(ngModel)]="settings.prompts.use_custom_prompts">
@@ -86,8 +86,20 @@ interface ChatSettings {
                   </div>
                 </div>
               </div>
+              
+              <div class="setting-item" *ngIf="!showPerformanceAttribution">
+                <div class="general-mode-info">
+                  <mat-icon>info</mat-icon>
+                  <div>
+                    <strong>Document Q&A Mode</strong>
+                    <p class="mode-description">
+                      Standard document-based question answering with general-purpose prompts and guardrails. Performance Attribution prompts are only available when the document type is set to "Performance Attribution".
+                    </p>
+                  </div>
+                </div>
+              </div>
 
-              <div class="prompt-settings" *ngIf="settings.prompts.use_custom_prompts">
+              <div class="prompt-settings" *ngIf="settings.prompts.use_custom_prompts && showPerformanceAttribution">
                 <div class="setting-item">
                   <label>System Prompt</label>
                   <p class="setting-description">
@@ -160,10 +172,10 @@ interface ChatSettings {
                 <p class="setting-description">
                   Controls creativity vs consistency (0 = deterministic, 1 = creative)
                 </p>
-                <mat-slider [min]="0" [max]="1" [step]="0.1" [(ngModel)]="settings.temperature">
+                <mat-slider [min]="0" [max]="1" [step]="0.1">
                   <input matSliderThumb [(ngModel)]="settings.temperature">
                 </mat-slider>
-                <span class="setting-value">{{ settings.temperature }}</span>
+                <span class="setting-value">{{ settings.temperature.toFixed(1) }}</span>
               </div>
 
               <div class="setting-item">
@@ -224,10 +236,10 @@ interface ChatSettings {
               <div class="setting-item">
                 <label>Relevance Threshold</label>
                 <p class="setting-description">Minimum similarity score for search results</p>
-                <mat-slider [min]="0" [max]="1" [step]="0.05" [(ngModel)]="settings.similarity_threshold">
+                <mat-slider [min]="0" [max]="1" [step]="0.05">
                   <input matSliderThumb [(ngModel)]="settings.similarity_threshold">
                 </mat-slider>
-                <span class="setting-value">{{ settings.similarity_threshold }}</span>
+                <span class="setting-value">{{ settings.similarity_threshold.toFixed(2) }}</span>
               </div>
 
               <div class="setting-item">
@@ -268,6 +280,8 @@ interface ChatSettings {
       width: 100%;
       max-width: 700px;
       max-height: 80vh;
+      background: #ffffff;
+      color: #1a202c;
     }
 
     .dialog-header {
@@ -276,10 +290,18 @@ interface ChatSettings {
       gap: 12px;
       padding: 20px 24px 0 24px;
       margin: 0;
+      background: #ffffff;
+      color: #1a202c;
     }
 
     .dialog-header mat-icon {
-      color: var(--primary-color);
+      color: #667eea;
+    }
+
+    .dialog-header span {
+      color: #1a202c;
+      font-weight: 700;
+      font-size: 20px;
     }
 
     .close-button {
@@ -290,14 +312,19 @@ interface ChatSettings {
       padding: 20px 24px;
       max-height: 60vh;
       overflow-y: auto;
+      background: #ffffff;
+      color: #1a202c;
     }
 
     .tab-content {
       padding: 20px 0;
+      background: #ffffff;
+      color: #1a202c;
     }
 
     .tab-icon {
       margin-right: 8px;
+      color: #4a5568;
     }
 
     .setting-item {
@@ -306,16 +333,18 @@ interface ChatSettings {
 
     .setting-item label {
       display: block;
-      font-weight: 500;
-      color: var(--text-primary);
-      margin-bottom: 4px;
+      font-weight: 700;
+      color: #1a202c !important;
+      margin-bottom: 8px;
+      font-size: 16px;
     }
 
     .setting-description {
-      font-size: 13px;
-      color: var(--text-muted);
-      margin: 4px 0 12px 0;
-      line-height: 1.4;
+      font-size: 14px;
+      color: #4a5568 !important;
+      margin: 4px 0 16px 0;
+      line-height: 1.6;
+      font-weight: 500;
     }
 
     .setting-header {
@@ -325,9 +354,13 @@ interface ChatSettings {
     }
 
     .setting-value {
-      font-size: 14px;
-      color: var(--text-secondary);
+      font-size: 15px;
+      color: #1a202c !important;
       margin-left: 12px;
+      font-weight: 700;
+      background: #f7fafc;
+      padding: 4px 8px;
+      border-radius: 6px;
     }
 
     .full-width {
@@ -335,42 +368,100 @@ interface ChatSettings {
     }
 
     .number-field {
-      width: 120px;
+      width: 140px;
+    }
+
+    /* Material form field overrides for better visibility */
+    ::ng-deep .chat-settings-dialog .mat-mdc-form-field {
+      background: #ffffff;
+    }
+
+    ::ng-deep .chat-settings-dialog .mat-mdc-form-field-outline {
+      color: #e2e8f0 !important;
+    }
+
+    ::ng-deep .chat-settings-dialog .mat-mdc-form-field-outline-thick {
+      color: #667eea !important;
+    }
+
+    ::ng-deep .chat-settings-dialog .mdc-text-field--outlined .mdc-text-field__input {
+      color: #1a202c !important;
+      background: #ffffff;
+    }
+
+    ::ng-deep .chat-settings-dialog .mat-mdc-select-value-text {
+      color: #1a202c !important;
+    }
+
+    ::ng-deep .chat-settings-dialog .mat-mdc-option {
+      color: #1a202c !important;
+    }
+
+    ::ng-deep .chat-settings-dialog .mat-mdc-option:hover {
+      background-color: #f7fafc !important;
+    }
+
+    ::ng-deep .chat-settings-dialog .mat-mdc-option.mdc-list-item--selected {
+      background-color: #667eea !important;
+      color: #ffffff !important;
     }
 
     .prompt-textarea {
       font-family: 'Courier New', monospace;
-      font-size: 13px;
-      line-height: 1.4;
+      font-size: 14px;
+      line-height: 1.5;
+      color: #1a202c !important;
+      background-color: #ffffff !important;
+      border: 2px solid #e2e8f0 !important;
+      border-radius: 8px;
+      padding: 12px;
+    }
+
+    .prompt-textarea:focus {
+      border-color: #667eea !important;
+      box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1) !important;
     }
 
     .prompt-settings {
-      border: 1px solid var(--border-color);
-      border-radius: 8px;
-      padding: 16px;
-      margin-top: 16px;
-      background: var(--surface-color);
+      border: 2px solid #e2e8f0;
+      border-radius: 12px;
+      padding: 24px;
+      margin-top: 20px;
+      background: #f8fafc;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
     }
 
     .prompt-actions {
       display: flex;
-      gap: 12px;
-      margin-top: 20px;
+      gap: 16px;
+      margin-top: 24px;
       flex-wrap: wrap;
     }
 
+    .prompt-actions button {
+      font-weight: 600;
+      padding: 10px 20px;
+      border-radius: 8px;
+    }
+
+    .prompt-actions button mat-icon {
+      margin-right: 8px;
+    }
+
     .prompt-mode-selection {
-      border: 1px solid var(--border-color);
+      border: 2px solid #e2e8f0;
       border-radius: 12px;
       padding: 0;
-      background: var(--surface-color);
+      background: #ffffff;
       overflow: hidden;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
     }
 
     .mode-option {
-      padding: 16px;
+      padding: 20px;
       transition: all 0.3s ease;
-      border-bottom: 1px solid var(--border-color);
+      border-bottom: 1px solid #e2e8f0;
+      background: #ffffff;
     }
 
     .mode-option:last-child {
@@ -378,37 +469,86 @@ interface ChatSettings {
     }
 
     .mode-option.active {
-      background: rgba(59, 130, 246, 0.1);
-      border-left: 4px solid #3b82f6;
+      background: #f0f4ff;
+      border-left: 6px solid #667eea;
+      box-shadow: inset 0 0 0 1px rgba(102, 126, 234, 0.2);
     }
 
     .mode-option strong {
       display: block;
-      margin-bottom: 8px;
-      color: var(--text-primary);
-      font-size: 15px;
+      margin-bottom: 10px;
+      color: #1a202c !important;
+      font-size: 17px;
+      font-weight: 800;
     }
 
     .mode-description {
       margin: 0;
-      font-size: 13px;
-      color: var(--text-muted);
-      line-height: 1.4;
+      font-size: 14px;
+      color: #4a5568 !important;
+      line-height: 1.6;
+      font-weight: 500;
     }
 
     .mode-info {
       margin-left: 0;
     }
 
+    .mode-info strong {
+      color: #1a202c !important;
+      font-size: 17px;
+      font-weight: 800;
+      display: block;
+      margin-bottom: 10px;
+    }
+
     .dialog-actions {
-      padding: 0 24px 20px 24px;
+      padding: 20px 24px;
       display: flex;
       justify-content: flex-end;
       gap: 12px;
+      background: #ffffff;
+      border-top: 1px solid #e2e8f0;
     }
 
     .mat-mdc-slider {
       width: 100%;
+    }
+
+    .general-mode-info {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 20px;
+      background: #f0f9ff;
+      border: 2px solid #bae6fd;
+      border-radius: 12px;
+      color: #0369a1;
+    }
+
+    .general-mode-info mat-icon {
+      color: #0ea5e9;
+      margin-top: 2px;
+      font-size: 20px;
+    }
+
+    .general-mode-info div {
+      flex: 1;
+    }
+
+    .general-mode-info strong {
+      color: #0369a1 !important;
+      font-size: 16px;
+      font-weight: 700;
+      display: block;
+      margin-bottom: 8px;
+    }
+
+    .general-mode-info .mode-description {
+      color: #075985 !important;
+      margin: 0;
+      line-height: 1.5;
+      font-size: 14px;
     }
 
     /* Responsive adjustments */
@@ -448,12 +588,18 @@ export class ChatSettingsDialogComponent implements OnInit {
   };
 
   isLoading = false;
+  documentType: string = '';  // Track current document type
+  showPerformanceAttribution = false;
 
   constructor(
     public dialogRef: MatDialogRef<ChatSettingsDialogComponent>,
-    @Inject(MAT_DIALOG_DATA) public data: { sessionId?: string },
+    @Inject(MAT_DIALOG_DATA) public data: { sessionId?: string, documentType?: string },
     private apiService: ApiService
-  ) {}
+  ) {
+    // Set document type from data
+    this.documentType = this.data.documentType || '';
+    this.showPerformanceAttribution = this.documentType === 'performance_attribution';
+  }
 
   ngOnInit() {
     this.loadSettings();
@@ -464,12 +610,23 @@ export class ChatSettingsDialogComponent implements OnInit {
     this.apiService.getSettings(this.data.sessionId).subscribe({
       next: (response) => {
         this.settings = response;
+        
+        // For non-performance attribution document types, use default settings instead of custom prompts
+        if (!this.showPerformanceAttribution) {
+          this.settings.prompts.use_custom_prompts = false;
+        }
+        
         this.isLoading = false;
-        console.log('Chat settings loaded:', this.settings);
+        console.log('Chat settings loaded:', this.settings, 'Document type:', this.documentType);
       },
       error: (error) => {
         console.error('Failed to load settings, using defaults:', error);
-        this.loadDefaultPrompts();
+        if (this.showPerformanceAttribution) {
+          this.loadDefaultPrompts();
+        } else {
+          // For non-performance attribution, disable custom prompts
+          this.settings.prompts.use_custom_prompts = false;
+        }
         this.isLoading = false;
       }
     });

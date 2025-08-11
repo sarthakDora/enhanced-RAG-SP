@@ -57,6 +57,7 @@ class ChatRequest(BaseModel):
     top_k: int = Field(default=10, le=50)
     rerank_top_k: int = Field(default=3, le=10)
     similarity_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+    reranking_strategy: Optional[str] = 'hybrid'
     
     # Generation parameters
     temperature: float = Field(default=0.1, ge=0.0, le=1.0)

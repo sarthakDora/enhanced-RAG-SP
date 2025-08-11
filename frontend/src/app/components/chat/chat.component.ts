@@ -345,11 +345,15 @@ import { ChatSettingsDialogComponent } from './chat-settings-dialog.component';
     .session-info h2 {
       margin: 0;
       font-size: 24px;
+      color: var(--text-primary) !important;
+      font-weight: 700;
     }
 
     .session-info p {
       margin: 4px 0 0 0;
       font-size: 14px;
+      color: var(--text-secondary) !important;
+      font-weight: 500;
     }
 
     .document-type-selection {
@@ -467,32 +471,44 @@ import { ChatSettingsDialogComponent } from './chat-settings-dialog.component';
 
     .message {
       max-width: 80%;
-      padding: 16px 20px;
+      padding: 20px 24px;
       border-radius: 16px;
       position: relative;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      border: 1px solid rgba(255, 255, 255, 0.2);
     }
 
     .user-msg {
-      background: var(--accent-gradient) !important;
-      color: white;
+      background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%) !important;
+      color: #ffffff !important;
       margin-left: auto;
+      font-weight: 500;
     }
 
     .assistant-msg {
-      background: var(--glass-primary) !important;
+      background: #ffffff !important;
       margin-right: auto;
+      border: 1px solid #e2e8f0 !important;
+      color: #1a202c !important;
     }
 
     .message-header {
       display: flex;
       align-items: center;
-      gap: 8px;
-      margin-bottom: 12px;
-      font-weight: 500;
+      gap: 10px;
+      margin-bottom: 16px;
+      font-weight: 600;
     }
 
     .assistant-icon {
-      color: var(--text-primary);
+      color: #4a5568 !important;
+      font-size: 20px;
+    }
+
+    .assistant-name {
+      color: #1a202c !important;
+      font-size: 15px;
+      font-weight: 700;
     }
 
     .header-actions {
@@ -526,50 +542,87 @@ import { ChatSettingsDialogComponent } from './chat-settings-dialog.component';
     .confidence-indicator {
       display: flex;
       align-items: center;
-      gap: 4px;
-      padding: 4px 8px;
-      border-radius: 8px;
+      gap: 6px;
+      padding: 6px 12px;
+      border-radius: 12px;
       font-size: 12px;
+      font-weight: 600;
+      border: 1px solid transparent;
     }
 
     .confidence-indicator.high {
-      background: rgba(76, 175, 80, 0.2);
-      color: #4caf50;
+      background: #dcfce7;
+      color: #166534 !important;
+      border-color: #bbf7d0;
     }
 
     .confidence-indicator.medium {
-      background: rgba(255, 193, 7, 0.2);
-      color: #ffc107;
+      background: #fef3c7;
+      color: #92400e !important;
+      border-color: #fde68a;
     }
 
     .confidence-indicator.low {
-      background: rgba(244, 67, 54, 0.2);
-      color: #f44336;
+      background: #fecaca;
+      color: #991b1b !important;
+      border-color: #fca5a5;
     }
 
     .message-content {
-      line-height: 1.6;
+      line-height: 1.7;
       word-wrap: break-word;
+      color: #1a202c !important;
+      font-size: 15px;
+      font-weight: 500;
+      text-shadow: none;
+    }
+
+    .user-msg .message-content {
+      color: #ffffff !important;
+      font-weight: 600;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+    }
+
+    .assistant-msg .message-content {
+      color: #1a202c !important;
+      font-weight: 500;
     }
 
     .message-content p {
-      margin: 0 0 8px 0;
+      margin: 0 0 12px 0;
+      color: inherit !important;
     }
 
-    .message-content:last-child {
+    .message-content p:last-child {
       margin-bottom: 0;
     }
 
+    .message-content strong {
+      color: inherit !important;
+      font-weight: 700;
+    }
+
+    .message-content em {
+      color: inherit !important;
+      font-style: italic;
+    }
+
+    /* Ensure all text elements inherit proper color */
+    .message-content * {
+      color: inherit !important;
+    }
+
     .sources-section {
-      margin-top: 16px;
-      padding-top: 16px;
-      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      margin-top: 20px;
+      padding-top: 20px;
+      border-top: 2px solid #f7fafc;
     }
 
     .sources-section h4 {
-      margin: 0 0 12px 0;
-      font-size: 14px;
-      color: var(--text-secondary);
+      margin: 0 0 16px 0;
+      font-size: 15px;
+      color: #4a5568 !important;
+      font-weight: 700;
     }
 
     .sources-list {
@@ -579,15 +632,20 @@ import { ChatSettingsDialogComponent } from './chat-settings-dialog.component';
     }
 
     .source-item {
-      padding: 12px;
+      padding: 16px;
       cursor: pointer;
       transition: all 0.3s ease;
-      border-radius: 8px;
+      border-radius: 10px;
+      background: #f8fafc !important;
+      border: 1px solid #e2e8f0;
+      margin-bottom: 8px;
     }
 
     .source-item:hover {
-      transform: translateY(-1px);
-      background: var(--glass-accent) !important;
+      transform: translateY(-2px);
+      background: #f0f4f7 !important;
+      border-color: #cbd5e0;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
     }
 
     .source-header {
@@ -599,46 +657,72 @@ import { ChatSettingsDialogComponent } from './chat-settings-dialog.component';
 
     .source-title {
       flex: 1;
-      font-weight: 500;
+      font-weight: 700;
       font-size: 14px;
+      color: #1a202c !important;
     }
 
     .source-score {
-      background: var(--glass-secondary);
-      padding: 2px 8px;
+      background: #e0f2fe;
+      color: #0277bd !important;
+      padding: 4px 10px;
       border-radius: 12px;
       font-size: 12px;
+      font-weight: 600;
+      border: 1px solid #b3e5fc;
     }
 
     .source-preview {
       font-size: 13px;
-      color: var(--text-secondary);
-      margin: 8px 0;
-      line-height: 1.4;
+      color: #4a5568 !important;
+      margin: 10px 0;
+      line-height: 1.5;
+      font-weight: 400;
     }
 
     .source-description {
       font-size: 13px;
-      color: var(--text-muted);
-      margin: 8px 0;
+      color: #6b7280 !important;
+      margin: 10px 0;
       font-style: italic;
+      font-weight: 500;
     }
 
     .source-meta {
       display: flex;
       gap: 12px;
       font-size: 12px;
-      color: var(--text-muted);
+      color: #6b7280 !important;
+      font-weight: 500;
+      margin-top: 8px;
+    }
+
+    .source-meta span {
+      background: #f3f4f6;
+      padding: 2px 8px;
+      border-radius: 8px;
+      color: #374151 !important;
+      font-weight: 500;
     }
 
     .message-time {
-      margin-top: 8px;
+      margin-top: 12px;
       font-size: 12px;
-      color: var(--text-muted);
+      color: #6b7280 !important;
+      font-weight: 600;
+    }
+
+    .user-msg .message-time {
+      color: rgba(255, 255, 255, 0.9) !important;
+    }
+
+    .assistant-msg .message-time {
+      color: #6b7280 !important;
     }
 
     .processing-time {
-      color: var(--text-muted);
+      color: inherit !important;
+      font-weight: 500;
     }
 
     .typing-indicator {
@@ -958,16 +1042,34 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewInit, AfterVie
         await this.uploadAttachedFiles();
       }
 
+      // Get current settings for this session to apply to chat request
+      let currentSettings;
+      try {
+        currentSettings = await this.apiService.getSettings(this.currentSession?.session_id).toPromise();
+      } catch (error) {
+        console.log('Using default settings for chat request');
+        currentSettings = {
+          temperature: 0.1,
+          max_tokens: 1000,
+          use_rag: true,
+          top_k: 10,
+          rerank_top_k: 3,
+          similarity_threshold: 0.7,
+          reranking_strategy: 'hybrid'
+        };
+      }
+
       const chatRequest: ChatRequest = {
         session_id: this.currentSession?.session_id,
         message: message,
         document_type: this.selectedDocumentType as DocumentType || undefined,
-        use_rag: true,
-        top_k: 10,
-        rerank_top_k: 3,
-        similarity_threshold: 0.3, // Lower threshold for better retrieval
-        temperature: 0.1,
-        max_tokens: 1000
+        use_rag: currentSettings.use_rag,
+        top_k: currentSettings.top_k,
+        rerank_top_k: currentSettings.rerank_top_k,
+        similarity_threshold: currentSettings.similarity_threshold,
+        reranking_strategy: currentSettings.reranking_strategy,
+        temperature: currentSettings.temperature,
+        max_tokens: currentSettings.max_tokens
       };
 
       const response: ChatResponse = await this.apiService.sendMessage(chatRequest).toPromise();
@@ -1007,15 +1109,19 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewInit, AfterVie
       width: '700px',
       maxWidth: '95vw',
       maxHeight: '90vh',
-      data: { sessionId: this.currentSession?.session_id },
+      data: { 
+        sessionId: this.currentSession?.session_id,
+        documentType: this.selectedDocumentType 
+      },
       panelClass: 'chat-settings-dialog-panel'
     });
 
     dialogRef.afterClosed().subscribe(result => {
       if (result?.saved) {
         console.log('Chat settings updated:', result.settings);
-        // Settings are automatically applied on the backend side
-        // No need to reload the page or do anything else
+        this.showSuccess('Chat settings have been updated for this session');
+        // Settings are automatically applied to subsequent chat requests
+        // through the getSettings() call in sendMessage()
       }
     });
   }
