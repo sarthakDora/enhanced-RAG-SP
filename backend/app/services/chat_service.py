@@ -798,8 +798,28 @@ Guidelines:
             
             logger.info(f"Processing knowledge base query with multi-agent pipeline: '{request.message}'")
             
-            # Ensure pipeline has access to document metadata cache (allow empty cache)
-            self.multi_agent_pipeline.set_document_metadata_cache(self.document_metadata_cache or {})
+            # Check if this is a performance attribution query
+            performance_keywords = ['performance', 'attribution', 'contributor', 'detractor', 'q2', '2025', 'top', 'best', 'worst']
+            is_performance_query = any(keyword in request.message.lower() for keyword in performance_keywords)
+            
+            if is_performance_query:
+                logger.info("PERFORMANCE_ATTRIBUTION: Detected performance query - bypassing stale metadata cache")
+                # Force fresh sync from Qdrant for performance queries to ensure we have latest data
+                try:
+                    all_points = await self.qdrant_service.get_all_points()
+                    if all_points:
+                        logger.info(f"PERFORMANCE_ATTRIBUTION: Force synced {len(all_points)} points from Qdrant")
+                        # Set empty cache to force pipeline to search Qdrant directly
+                        self.multi_agent_pipeline.set_document_metadata_cache({})
+                    else:
+                        logger.warning("PERFORMANCE_ATTRIBUTION: No points found during force sync")
+                        self.multi_agent_pipeline.set_document_metadata_cache({})
+                except Exception as e:
+                    logger.error(f"PERFORMANCE_ATTRIBUTION: Force sync failed: {e}, proceeding with direct Qdrant search")
+                    self.multi_agent_pipeline.set_document_metadata_cache({})
+            else:
+                # Normal queries use metadata cache
+                self.multi_agent_pipeline.set_document_metadata_cache(self.document_metadata_cache or {})
             
             # Get session settings for search parameters
             settings = get_current_settings(request.session_id)

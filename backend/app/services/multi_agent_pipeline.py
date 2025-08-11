@@ -101,6 +101,16 @@ class CategoryBasedContextRetriever:
                              rerank_top_k: int = 3, reranking_strategy: str = 'hybrid') -> List[DocumentSearchResult]:
         """Retrieve relevant documents based on query and category"""
         target_collection = self.category_collections.get(category, "performance_docs")
+        
+        # Special handling for performance attribution - be more aggressive in finding documents
+        if category == QueryCategory.PERFORMANCE_ATTRIBUTION:
+            logger.info("PERFORMANCE_ATTRIBUTION: Using aggressive search strategy")
+            # Lower similarity threshold and increase document count for performance queries
+            similarity_threshold = min(similarity_threshold, 0.2)  # Very permissive
+            top_k = max(top_k, 15)  # Get more documents
+            rerank_top_k = max(rerank_top_k, 5)  # Keep more after reranking
+            logger.info(f"PERFORMANCE_ATTRIBUTION: Adjusted params - threshold: {similarity_threshold}, top_k: {top_k}, rerank_top_k: {rerank_top_k}")
+        
         try:
             # Generate embedding for the query
             query_embedding = await self.ollama_service.generate_embedding(query)
@@ -118,21 +128,29 @@ class CategoryBasedContextRetriever:
                 reranking_strategy=reranking_strategy
             )
             
-            # Search in the category-specific collection first
+            # For performance attribution, search ALL collections aggressively
             results = []
             collections_to_try = []
             
-            # Check if the target collection exists, add to search list
-            if await self.qdrant_service.collection_exists(target_collection):
-                logger.info(f"Category collection {target_collection} exists, searching there first")
-                collections_to_try.append(target_collection)
+            if category == QueryCategory.PERFORMANCE_ATTRIBUTION:
+                logger.info("PERFORMANCE_ATTRIBUTION: Searching ALL collections to find any performance data")
+                # Search main collection first (most likely to have data)
+                collections_to_try.append(self.qdrant_service.collection_name)
+                # Then search all other collections
+                collections_to_try.append(None)  # None means search all collections
             else:
-                logger.info(f"Category collection {target_collection} doesn't exist")
-            
-            # Always add main collection as fallback
-            collections_to_try.append(self.qdrant_service.collection_name)
-            # Also try searching all collections if no results yet  
-            collections_to_try.append(None)  # None means search all collections
+                # Normal category-specific search
+                # Check if the target collection exists, add to search list
+                if await self.qdrant_service.collection_exists(target_collection):
+                    logger.info(f"Category collection {target_collection} exists, searching there first")
+                    collections_to_try.append(target_collection)
+                else:
+                    logger.info(f"Category collection {target_collection} doesn't exist")
+                
+                # Always add main collection as fallback
+                collections_to_try.append(self.qdrant_service.collection_name)
+                # Also try searching all collections if no results yet  
+                collections_to_try.append(None)  # None means search all collections
             
             for collection in collections_to_try:
                 if collection:
@@ -150,8 +168,9 @@ class CategoryBasedContextRetriever:
                 logger.info(f"Found {len(current_results)} results in this search")
                 results.extend(current_results)
                 
-                # If we found enough results, stop searching
-                if len(results) >= rerank_top_k:
+                # For performance attribution, keep searching even if we have some results
+                # For other categories, stop if we have enough
+                if category != QueryCategory.PERFORMANCE_ATTRIBUTION and len(results) >= rerank_top_k:
                     break
             
             # Remove duplicates and sort by score
@@ -169,11 +188,80 @@ class CategoryBasedContextRetriever:
             print(f"CONTEXT_RETRIEVAL_DEBUG: Found {len(final_results)} documents for category {category.value}, query: '{query}'", file=sys.stderr)
             if not final_results:
                 print(f"CONTEXT_RETRIEVAL_DEBUG: No documents found. Searched {len(collections_to_try)} collections", file=sys.stderr)
+                
+                # For performance attribution, if no results found, try a fallback strategy
+                if category == QueryCategory.PERFORMANCE_ATTRIBUTION:
+                    logger.warning("PERFORMANCE_ATTRIBUTION: No documents found with similarity search, trying fallback strategy")
+                    return await self._fallback_get_any_documents(query)
             
             return final_results
             
         except Exception as e:
             logger.error(f"Context retrieval failed for category {category.value}: {e}")
+            if category == QueryCategory.PERFORMANCE_ATTRIBUTION:
+                logger.info("PERFORMANCE_ATTRIBUTION: Search failed, trying fallback strategy")
+                return await self._fallback_get_any_documents(query)
+            return []
+
+    async def _fallback_get_any_documents(self, query: str) -> List[DocumentSearchResult]:
+        """Fallback strategy for performance attribution - get any documents from Qdrant"""
+        try:
+            logger.info("PERFORMANCE_ATTRIBUTION_FALLBACK: Attempting to get any available documents from Qdrant")
+            
+            # Try to get some documents directly from Qdrant without similarity search
+            all_points = await self.qdrant_service.get_all_points()
+            if not all_points:
+                logger.warning("PERFORMANCE_ATTRIBUTION_FALLBACK: No points found in Qdrant")
+                return []
+            
+            logger.info(f"PERFORMANCE_ATTRIBUTION_FALLBACK: Found {len(all_points)} total points in Qdrant")
+            
+            # Convert points to DocumentSearchResult objects
+            from ..models.document import DocumentMetadata, DocumentSearchResult, ConfidenceLevel, DocumentType
+            from datetime import datetime
+            
+            fallback_results = []
+            for i, point in enumerate(all_points[:10]):  # Limit to first 10 documents
+                try:
+                    payload = point.get("payload", {})
+                    
+                    # Create metadata
+                    metadata = DocumentMetadata(
+                        filename=payload.get("filename", f"document_{i}.txt"),
+                        file_size=payload.get("file_size", 1000),
+                        file_type=payload.get("file_type", ".txt"),
+                        document_type=payload.get("document_type", DocumentType.OTHER),
+                        upload_timestamp=datetime.now(),
+                        total_pages=payload.get("total_pages", 1),
+                        total_chunks=1,
+                        has_financial_data=payload.get("has_financial_data", True),
+                        confidence_score=0.5
+                    )
+                    
+                    # Create search result
+                    result = DocumentSearchResult(
+                        chunk_id=point.get("id", f"fallback_{i}"),
+                        document_id=payload.get("document_id", f"doc_{i}"),
+                        content=payload.get("content", ""),
+                        score=0.5,  # Neutral score for fallback
+                        confidence_level=ConfidenceLevel.MEDIUM,
+                        document_metadata=metadata,
+                        chunk_metadata=payload.get("chunk_metadata", {})
+                    )
+                    
+                    if result.content.strip():  # Only add if there's actual content
+                        fallback_results.append(result)
+                        logger.info(f"PERFORMANCE_ATTRIBUTION_FALLBACK: Added document {metadata.filename} with {len(result.content)} chars")
+                        
+                except Exception as e:
+                    logger.error(f"PERFORMANCE_ATTRIBUTION_FALLBACK: Error processing point {i}: {e}")
+                    continue
+            
+            logger.info(f"PERFORMANCE_ATTRIBUTION_FALLBACK: Returning {len(fallback_results)} documents")
+            return fallback_results
+            
+        except Exception as e:
+            logger.error(f"PERFORMANCE_ATTRIBUTION_FALLBACK: Fallback strategy failed: {e}")
             return []
 
 class ResponseGenerationAgent:
@@ -193,19 +281,23 @@ class ResponseGenerationAgent:
 SPECIALIZATION: Performance Attribution Analysis
 You are a buy-side performance attribution commentator for an institutional asset manager.
 Your audience is portfolio managers and senior analysts.
-Write concise, evidence-based commentary grounded ONLY in the provided context (tables, derived stats, and metadata).
+Write concise, evidence-based commentary grounded ONLY in the provided document context.
 Quantify every claim with percentage points (pp) and specify the period and level (total vs. sector).
 Attribute drivers correctly (sector selection vs. security selection; include "total management/interaction" if provided).
 Never invent data or security names. If information is missing, say so briefly.
 Tone: crisp, professional, specific.
 
+CRITICAL: You MUST analyze the document context provided in the DOCUMENT CONTEXT section. This contains tables, performance data, attribution metrics, and other financial information. Use ONLY this data to answer questions.
+
 TASK FOR PERFORMANCE ATTRIBUTION QUERIES:
-Using ONLY the context, draft attribution commentary for the requested period.
-- Quantify each claim with precise pp deltas.
-- Name top 2–3 positive contributors and 1–2 detractors and explain if the driver was sector selection, security selection, or both.
-- Keep it data-first, no fluff.
-- Do not show whole table inside response.
-- Focus on actionable insights for portfolio managers.
+Using ONLY the document context provided, draft attribution commentary for the requested period.
+- Extract performance data, returns, and attribution metrics from the document context
+- Quantify each claim with precise pp deltas found in the documents
+- Identify top contributors and detractors based on data in the document context
+- Explain if drivers were sector selection, security selection, or both (based on document data)
+- Keep it data-first, no fluff
+- Do not show whole tables in response - summarize key findings
+- Focus on actionable insights for portfolio managers
 
 Return clean markdown with sections:
 - Executive summary (bullets)
@@ -214,13 +306,16 @@ Return clean markdown with sections:
 - Risks/watch items (optional)
 
 Rules:
-- One decimal place for all pp values; keep +/- signs.
-- Executive summary ~80–120 words; full note ~150–250 words.
-- No JSON appendix or code blocks in response.
+- One decimal place for all pp values; keep +/- signs
+- Executive summary ~80–120 words; full note ~150–250 words
+- No JSON appendix or code blocks in response
+- Reference specific tables or data points from the document context when available
+
+IMPORTANT: The DOCUMENT CONTEXT section will contain the actual performance attribution data, tables, and metrics. You must parse and analyze this data to provide accurate commentary.
 
 QUERY ANALYSIS: The user is asking about """ + query + """
 
-CONTEXT ANALYSIS: Based on the retrieved documents, focus on performance metrics, attribution data, and ranking information with precise quantitative analysis."""
+CONTEXT ANALYSIS: You will receive performance attribution documents with tables and data. Parse these documents carefully to extract attribution metrics, returns, and performance drivers."""
 
         elif category == QueryCategory.TECHNICAL:
             return base_prompt + """
@@ -350,15 +445,45 @@ Generate a comprehensive response:"""
             content = doc.get('content', '')
             confidence = doc.get('confidence', 0.0)
             
-            logger.info(f"Adding document {i}: {filename}, content_length={len(content)}, confidence={confidence:.3f}")
+            # Handle DocumentSearchResult objects
+            if hasattr(doc, 'content'):
+                content = doc.content
+            elif hasattr(doc, 'document_metadata'):
+                # Try to get content from the document result object
+                if hasattr(doc, 'content'):
+                    content = doc.content
             
-            context_parts.append(f"""
+            # Debug: log what we're getting
+            logger.info(f"Document {i}: {filename}")
+            logger.info(f"  Content length: {len(content)}")
+            logger.info(f"  Confidence: {confidence:.3f}")
+            logger.info(f"  Content preview: {content[:200]}..." if content else "  No content available")
+            
+            if not content or len(content.strip()) == 0:
+                logger.warning(f"Document {i} ({filename}) has no content - skipping")
+                continue
+            
+            # For performance attribution documents, format specially
+            if category == QueryCategory.PERFORMANCE_ATTRIBUTION:
+                context_parts.append(f"""
+=== DOCUMENT {i}: {filename} ===
+Relevance Score: {confidence:.2f}
+Document Type: Performance Attribution Data
+Content:
+{content}
+""")
+            else:
+                context_parts.append(f"""
 Document {i}: {filename} (Relevance: {confidence:.2f})
 Content: {content}
 """)
         
+        if not context_parts:
+            logger.warning("No documents with content found after processing")
+            return "No document content available for analysis."
+        
         context_text = "\n".join(context_parts)
-        logger.info(f"Built context text with {len(context_text)} characters")
+        logger.info(f"Built context text with {len(context_text)} characters from {len(context_parts)} documents")
         return context_text
     
     def _format_conversation_history(self, history: List[Dict]) -> str:
