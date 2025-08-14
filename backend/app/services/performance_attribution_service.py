@@ -888,8 +888,8 @@ Constraints:
 
             # REST fallback
             import requests
-            rest_points = [{"id": str(p.id), "vector": list(p.vector), "payload": p.payload} for p in points]
-            body = {"points": _json_sanitize(rest_points)}
+            rest_points = [{"id": str(p.id), "vector": {"": list(p.vector[""])}, "payload": p.payload} for p in points]
+            body = _json_sanitize(rest_points)
             resp = requests.put(
                 f"http://localhost:6333/collections/{collection_name}/points?wait=true",
                 json=body,
@@ -930,26 +930,38 @@ Constraints:
 
             filters = self._derive_filters_from_question(question)
 
-            # Depending on client version, the param could be vector= or query_vector=
+            # Search with named vector (empty string for default)
             try:
                 search_results = self.qdrant.client.search(
                     collection_name=collection_name,
-                    query_vector=query_embedding,
+                    query_vector=("", query_embedding),
                     query_filter=filters,
                     limit=12,
                     with_payload=True,
                 )
-            except TypeError:
-                search_results = self.qdrant.client.search(
-                    collection_name=collection_name,
-                    vector=query_embedding,
-                    query_filter=filters,
-                    limit=12,
-                    with_payload=True,
-                )
+            except (TypeError, Exception):
+                # Fallback to older format
+                try:
+                    search_results = self.qdrant.client.search(
+                        collection_name=collection_name,
+                        query_vector=query_embedding,
+                        query_filter=filters,
+                        limit=12,
+                        with_payload=True,
+                    )
+                except TypeError:
+                    search_results = self.qdrant.client.search(
+                        collection_name=collection_name,
+                        vector=query_embedding,
+                        query_filter=filters,
+                        limit=12,
+                        with_payload=True,
+                    )
 
             import json
+            logger.info(f"Search found {len(search_results or [])} results for question: {question} (mode: {mode})")
             context_json = json.dumps([r.payload for r in (search_results or [])], indent=2)
+            logger.info(f"Context JSON length: {len(context_json)} characters for mode: {mode}")
 
         # Generate response
         if mode == "commentary":
@@ -965,6 +977,18 @@ Constraints:
         return Filter(must=must) if must else None
 
     async def _generate_commentary_response(self, context: str, session_id: str) -> Dict[str, Any]:
+        # Validate context is not empty or meaningless
+        context_lines = [line.strip() for line in context.split('\n') if line.strip()]
+        if len(context_lines) < 3 or not any('portfolio' in line.lower() or 'return' in line.lower() or 'attribution' in line.lower() for line in context_lines):
+            logger.warning(f"Commentary validation failed: {len(context_lines)} context lines found, session: {session_id}")
+            return {
+                "mode": "commentary",
+                "response": "Unable to generate commentary: No valid attribution data found in the context. Please ensure the attribution file was uploaded and processed successfully, and that the session contains performance attribution data.",
+                "session_id": session_id,
+                "context_used": 0,
+                "error": "No valid context provided",
+            }
+        
         user_prompt = f"""
 CONTEXT:
 {context}
@@ -982,11 +1006,24 @@ Use one decimal place for pp values and retain +/- signs.
             "mode": "commentary",
             "response": response.get("response", ""),
             "session_id": session_id,
-            "context_used": len(context.split("\n")),
+            "context_used": len(context_lines),
             "prompt": user_prompt,
         }
 
     async def _generate_qa_response(self, question: str, context: str, session_id: str) -> Dict[str, Any]:
+        # Validate context is not empty or meaningless
+        context_lines = [line.strip() for line in context.split('\n') if line.strip()]
+        if len(context_lines) < 3 or not any('portfolio' in line.lower() or 'return' in line.lower() or 'attribution' in line.lower() for line in context_lines):
+            logger.warning(f"Q&A validation failed: {len(context_lines)} context lines found for question: {question}, session: {session_id}")
+            return {
+                "mode": "qa",
+                "question": question,
+                "response": "Unable to answer question: No valid attribution data found in the context. Please ensure the attribution file was uploaded and processed successfully, and that the session contains performance attribution data.",
+                "session_id": session_id,
+                "context_used": 0,
+                "error": "No valid context provided",
+            }
+        
         system_prompt = """You are a meticulous attribution Q&A assistant.
 Answer ONLY using the CONTEXT from the user's uploaded document (tables, derived stats, excerpts).
 If the answer is not present in CONTEXT, reply: "The report does not contain that information."
@@ -1008,7 +1045,7 @@ RESPONSE RULES:
             "question": question,
             "response": response.get("response", ""),
             "session_id": session_id,
-            "context_used": len(context.split("\n")),
+            "context_used": len(context_lines),
             "prompt": user_prompt,
         }
 

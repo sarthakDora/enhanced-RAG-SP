@@ -903,7 +903,6 @@ export class AttributionComponent implements OnInit {
 
       this.showSuccess('Attribution file processed successfully!');
       this.loadActiveSessions();
-  this.chunkList = [];
 
     } catch (error: any) {
       this.showError(error.error?.detail || 'Failed to process attribution file');
@@ -922,8 +921,8 @@ export class AttributionComponent implements OnInit {
       if (this.commentaryPeriod.trim()) {
         formData.append('period', this.commentaryPeriod.trim());
       }
-      // Pass context as JSON string
-      formData.append('context', JSON.stringify(this.chunkList));
+      // Don't pass context - let backend retrieve from Qdrant
+      // formData.append('context', JSON.stringify(this.chunkList));
 
       const response = await this.apiService.generateAttributionCommentary(formData).toPromise();
       console.log('[Attribution] Commentary response:', response);
@@ -954,8 +953,8 @@ export class AttributionComponent implements OnInit {
       formData.append('session_id', this.uploadResult.session_id);
       formData.append('question', this.currentQuestion.trim());
       formData.append('mode', 'qa');
-      // Pass context as JSON string
-      formData.append('context', JSON.stringify(this.chunkList));
+      // Don't pass context - let backend retrieve from Qdrant
+      // formData.append('context', JSON.stringify(this.chunkList));
 
       const response = await this.apiService.askAttributionQuestion(formData).toPromise();
       // Add to history
