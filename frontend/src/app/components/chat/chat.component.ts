@@ -44,7 +44,7 @@ import { ChatSettingsDialogComponent } from './chat-settings-dialog.component';
   template: `
     <div class="chat-container fade-in">
       <!-- Chat Header -->
-      <div class="chat-header glass-card">
+      <div class="chat-header glass-card" [class.collapsed]="isHeaderCollapsed">
         <div class="session-info">
           <h2 class="gradient-text">{{ currentSession?.title || 'New Conversation' }}</h2>
           <p class="text-muted">
@@ -58,7 +58,7 @@ import { ChatSettingsDialogComponent } from './chat-settings-dialog.component';
           </p>
           
           <!-- Document Type Selection -->
-          <div class="document-type-selection" *ngIf="currentSession">
+          <div class="document-type-selection" *ngIf="currentSession && !isHeaderCollapsed">
             <mat-form-field appearance="outline" class="document-type-field">
               <mat-label>Document Focus</mat-label>
               <mat-select [(ngModel)]="selectedDocumentType" 
@@ -84,7 +84,7 @@ import { ChatSettingsDialogComponent } from './chat-settings-dialog.component';
           </div>
           
           <!-- Commentary Mode Toggle -->
-          <div class="commentary-mode-section" *ngIf="currentSession && selectedDocumentType === 'performance_attribution'">
+          <div class="commentary-mode-section" *ngIf="currentSession && selectedDocumentType === 'performance_attribution' && !isHeaderCollapsed">
             <mat-slide-toggle 
               [(ngModel)]="commentaryMode" 
               class="commentary-toggle"
@@ -99,6 +99,13 @@ import { ChatSettingsDialogComponent } from './chat-settings-dialog.component';
         </div>
         
         <div class="chat-controls">
+          <button mat-icon-button 
+                  class="glass-button"
+                  (click)="toggleHeaderCollapse()"
+                  [title]="isHeaderCollapsed ? 'Expand header' : 'Collapse header'">
+            <mat-icon>{{ isHeaderCollapsed ? 'expand_more' : 'expand_less' }}</mat-icon>
+          </button>
+          
           <button mat-icon-button 
                   class="glass-button"
                   (click)="startNewSession()"
@@ -311,6 +318,8 @@ import { ChatSettingsDialogComponent } from './chat-settings-dialog.component';
             <input matInput 
                    [(ngModel)]="currentMessage" 
                    (keydown.enter)="sendMessage()"
+                   (focus)="onInputFocus()"
+                   (input)="onInputChange()"
                    [disabled]="isLoading"
                    [placeholder]="getInputPlaceholder()"
                    #messageInput>
@@ -366,6 +375,24 @@ import { ChatSettingsDialogComponent } from './chat-settings-dialog.component';
       margin-bottom: 0;
       gap: 16px;
       flex-shrink: 0;
+      transition: all 0.3s ease;
+      overflow: hidden;
+    }
+
+    .chat-header.collapsed {
+      padding: 8px 20px;
+      max-height: 60px;
+    }
+
+    .chat-header.collapsed .session-info {
+      overflow: hidden;
+    }
+
+    .chat-header.collapsed .session-info h2,
+    .chat-header.collapsed .session-info p {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .session-info h2 {
@@ -1080,6 +1107,9 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewInit, AfterVie
   private isUserScrolling = false;
   shouldAutoScroll = true; // Made public for template access
   private scrollThreshold = 100;
+  
+  // Header collapse management
+  isHeaderCollapsed = false;
 
   // Document type selection
   selectedDocumentType: string = '';
@@ -1156,6 +1186,7 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewInit, AfterVie
       };
       this.messages = [];
       this.selectedDocumentType = '';
+      this.expandHeaderOnNewSession();
     } catch (error) {
       this.showError('Failed to create new session');
     }
@@ -1183,6 +1214,9 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewInit, AfterVie
     // Enable auto-scroll for new messages
     this.shouldAutoScroll = true;
     this.isUserScrolling = false;
+    
+    // Auto-collapse header when typing
+    this.autoCollapseHeader();
 
     try {
       // Upload files first if any are attached
@@ -1251,6 +1285,9 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewInit, AfterVie
     } finally {
       this.isLoading = false;
       this.isTyping = false;
+      
+      // Auto-collapse header when receiving response
+      this.autoCollapseHeader();
     }
   }
 
@@ -1458,25 +1495,12 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewInit, AfterVie
     this.totalFiles = this.attachedFiles.length;
 
     try {
-      const uploadPromises = this.attachedFiles.map(async (file, index) => {
-        try {
-          const response = await this.apiService.uploadDocuments(
-            [file],
-            this.uploadDocumentType, // Use selected document type
-            'chat-attachment'
-          ).toPromise();
-          
-          this.uploadedCount++;
-          this.uploadProgress = (this.uploadedCount / this.totalFiles) * 100;
-          
-          return response;
-        } catch (error) {
-          console.error(`Failed to upload ${file.name}:`, error);
-          throw error;
-        }
-      });
-
-      await Promise.all(uploadPromises);
+      // Check if Performance Attribution is selected
+      if (this.uploadDocumentType === 'performance_attribution') {
+        await this.uploadAttributionFiles();
+      } else {
+        await this.uploadRegularDocuments();
+      }
       
       this.showSuccess(`Successfully uploaded ${this.uploadedCount} file(s)`);
       
@@ -1491,6 +1515,65 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewInit, AfterVie
       this.uploadedCount = 0;
       this.totalFiles = 0;
     }
+  }
+
+  private async uploadAttributionFiles(): Promise<void> {
+    // Filter for Excel files only for attribution
+    const excelFiles = this.attachedFiles.filter(file => 
+      file.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || 
+      file.type === 'application/vnd.ms-excel'
+    );
+
+    if (excelFiles.length === 0) {
+      throw new Error('No Excel files found for attribution processing. Please upload .xlsx or .xls files.');
+    }
+
+    // Process each Excel file through attribution API
+    const uploadPromises = excelFiles.map(async (file, index) => {
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
+        // Optional: Add session_id if needed
+        // formData.append('session_id', `chat_${Date.now()}`);
+
+        const response = await this.apiService.uploadAttributionFile(formData).toPromise();
+        
+        this.uploadedCount++;
+        this.uploadProgress = (this.uploadedCount / this.totalFiles) * 100;
+        
+        // Show attribution processing success message
+        this.showSuccess(`Attribution file "${file.name}" processed successfully! Asset class: ${response.asset_class}, Chunks: ${response.chunks_created}`);
+        
+        return response;
+      } catch (error) {
+        console.error(`Failed to process attribution file ${file.name}:`, error);
+        throw error;
+      }
+    });
+
+    await Promise.all(uploadPromises);
+  }
+
+  private async uploadRegularDocuments(): Promise<void> {
+    const uploadPromises = this.attachedFiles.map(async (file, index) => {
+      try {
+        const response = await this.apiService.uploadDocuments(
+          [file],
+          this.uploadDocumentType,
+          'chat-attachment'
+        ).toPromise();
+        
+        this.uploadedCount++;
+        this.uploadProgress = (this.uploadedCount / this.totalFiles) * 100;
+        
+        return response;
+      } catch (error) {
+        console.error(`Failed to upload ${file.name}:`, error);
+        throw error;
+      }
+    });
+
+    await Promise.all(uploadPromises);
   }
 
   showExistingDocuments() {
@@ -1613,5 +1696,36 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewInit, AfterVie
       }
     }
     return 'Ask about your financial documents...';
+  }
+
+  // Header collapse management methods
+  toggleHeaderCollapse() {
+    this.isHeaderCollapsed = !this.isHeaderCollapsed;
+  }
+
+  autoCollapseHeader() {
+    // Auto-collapse header when there are messages and user is actively chatting
+    if (this.messages.length > 2) {
+      this.isHeaderCollapsed = true;
+    }
+  }
+
+  expandHeaderOnNewSession() {
+    // Expand header when starting a new session
+    this.isHeaderCollapsed = false;
+  }
+
+  onInputFocus() {
+    // Auto-collapse header when user focuses on input (if messages exist)
+    if (this.messages.length > 0) {
+      this.isHeaderCollapsed = true;
+    }
+  }
+
+  onInputChange() {
+    // Auto-collapse header when user starts typing (if messages exist)
+    if (this.messages.length > 0 && this.currentMessage.trim().length > 0) {
+      this.isHeaderCollapsed = true;
+    }
   }
 }

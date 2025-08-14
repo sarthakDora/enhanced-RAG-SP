@@ -852,13 +852,13 @@ Guidelines:
             if request.document_type == "performance_attribution":
                 if request.commentary_mode:
                     logger.info("🔷 ATTRIBUTION_COMMENTARY: Using structured commentary generation mode")
-                    logger.info(f"   📊 Query: {request.message[:100]}...")
+                    logger.info(f"Query: {request.message[:100]}...")
                     pipeline_result = await self._handle_attribution_commentary(
                         request, conversation_history, search_params, custom_prompts
                     )
                 else:
-                    logger.info("🔶 ATTRIBUTION_Q&A: Using document search Q&A mode")
-                    logger.info(f"   ❓ Query: {request.message[:100]}...")
+                    logger.info("ATTRIBUTION_Q&A: Using document search Q&A mode")
+                    logger.info(f"Query: {request.message[:100]}...")
                     pipeline_result = await self._handle_attribution_qa(
                         request, conversation_history, search_params, custom_prompts
                     )
@@ -942,12 +942,32 @@ Guidelines:
             start_time = time.time()
             
             # First, search for relevant chunks
+            logger.info(f"ATTRIBUTION_COMMENTARY: Searching for documents with type: {request.document_type}")
             sources = await self._search_documents(request, await self.get_session(request.session_id))
-            
+            logger.info(f"ATTRIBUTION_COMMENTARY: Initial search found {len(sources)} sources")
+            # If no sources found, retry with looser parameters
             if not sources:
-                logger.warning("No sources found for attribution commentary")
+                logger.warning("No sources found for attribution commentary, retrying with looser search parameters")
+                # Create a fallback request with lower similarity threshold and no document type filter
+                fallback_request = ChatRequest(
+                    session_id=request.session_id,
+                    message=request.message,
+                    document_type=None,
+                    commentary_mode=request.commentary_mode,
+                    use_rag=True,
+                    top_k=15,
+                    rerank_top_k=5,
+                    similarity_threshold=0.1,
+                    reranking_strategy="hybrid",
+                    temperature=request.temperature,
+                    max_tokens=request.max_tokens
+                )
+                sources = await self._search_documents(fallback_request, await self.get_session(request.session_id))
+                logger.info(f"ATTRIBUTION_COMMENTARY: Fallback search found {len(sources)} sources")
+            if not sources:
+                logger.error("ATTRIBUTION_COMMENTARY: No attribution documents found after fallback search. Check document upload and indexing.")
                 return {
-                    "answer": "I couldn't find any attribution documents to analyze. Please upload an attribution report first.",
+                    "answer": "No attribution documents were found for analysis. Please ensure you have uploaded performance attribution reports and they are indexed correctly. If you just uploaded, try re-running after a few seconds.",
                     "confidence": 0.1,
                     "sources": [],
                     "total_agents_used": 1,
@@ -959,11 +979,27 @@ Guidelines:
             # Convert sources to format expected by attribution prompt service
             document_chunks = []
             for source in sources:
+                chunk_content = source.content if hasattr(source, 'content') else ''
+                chunk_filename = source.document_metadata.filename if source.document_metadata else 'Unknown Document'
+                chunk_type = source.document_metadata.document_type if source.document_metadata else 'unknown'
+                logger.info(f"ATTRIBUTION_COMMENTARY: Chunk {chunk_filename} content preview: {chunk_content[:200]}")
                 document_chunks.append({
-                    'filename': source.document_metadata.filename if source.document_metadata else 'Unknown Document',
-                    'content': source.content,
-                    'document_type': source.document_metadata.document_type if source.document_metadata else 'unknown'
+                    'filename': chunk_filename,
+                    'content': chunk_content,
+                    'document_type': chunk_type
                 })
+            # Fallback: If all chunks are empty, return error
+            if all(not chunk['content'].strip() for chunk in document_chunks):
+                logger.error("ATTRIBUTION_COMMENTARY: All document chunks are empty. Attribution data missing in Qdrant.")
+                return {
+                    "answer": "No attribution data found in the uploaded documents. Please check that your attribution report contains actual data and was processed correctly.",
+                    "confidence": 0.1,
+                    "sources": [],
+                    "total_agents_used": 1,
+                    "processing_time": (time.time() - start_time),
+                    "prompt": "No attribution data found in document chunks",
+                    "agent_responses": [{"agent": "attribution_handler", "success": False, "confidence": 0.1}]
+                }
             
             # Detect asset class from document content
             asset_class_str = self.attribution_prompt_service.detect_asset_class(document_chunks)

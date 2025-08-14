@@ -54,6 +54,13 @@ import { Subscription, filter } from 'rxjs';
                 </div>
               </a>
               
+              <a routerLink="/attribution" 
+                 routerLinkActive="active" 
+                 class="nav-item glass-button">
+                <mat-icon>account_balance</mat-icon>
+                <span>Attribution</span>
+              </a>
+              
               <a routerLink="/analytics" 
                  routerLinkActive="active" 
                  class="nav-item glass-button">
