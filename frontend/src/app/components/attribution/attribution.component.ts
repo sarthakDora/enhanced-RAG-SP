@@ -32,6 +32,8 @@ interface AttributionResponse {
   session_id: string;
   question?: string;
   context_used?: number;
+  prompt?: string;
+  error?: string;
 }
 
 @Component({
@@ -168,16 +170,25 @@ interface AttributionResponse {
 
       <!-- Chunks Viewer Section -->
       <div class="chunks-section glass-card" *ngIf="chunkList && chunkList.length">
-        <h3>Attribution Chunks</h3>
-        <div class="chunks-grid">
-          <div *ngFor="let chunk of chunkList; let i = index" class="chunk-card">
-            <div class="chunk-header" (click)="chunk.expanded = !chunk.expanded">
-              <mat-icon>{{ chunk.expanded ? 'expand_less' : 'expand_more' }}</mat-icon>
-              <span><strong>Chunk {{ i + 1 }}</strong> - {{ chunk.filename }}</span>
-              <span class="chunk-meta">{{ chunk.document_type }}</span>
-            </div>
-            <div class="chunk-content" *ngIf="chunk.expanded">
-              <pre>{{ chunk.content }}</pre>
+        <div class="collapsible-header" (click)="toggleChunks()">
+          <div class="header-content">
+            <mat-icon class="section-icon">storage</mat-icon>
+            <h3>Attribution Chunks ({{ chunkList.length }})</h3>
+          </div>
+          <mat-icon class="toggle-icon">{{ showChunks ? 'expand_less' : 'expand_more' }}</mat-icon>
+        </div>
+        
+        <div class="collapsible-content" [class.expanded]="showChunks">
+          <div class="chunks-grid">
+            <div *ngFor="let chunk of chunkList; let i = index" class="chunk-card">
+              <div class="chunk-header" (click)="chunk.expanded = !chunk.expanded">
+                <mat-icon>{{ chunk.expanded ? 'expand_less' : 'expand_more' }}</mat-icon>
+                <span><strong>Chunk {{ i + 1 }}</strong> - {{ chunk.filename }}</span>
+                <span class="chunk-meta">{{ chunk.document_type }}</span>
+              </div>
+              <div class="chunk-content" *ngIf="chunk.expanded">
+                <pre>{{ chunk.content }}</pre>
+              </div>
             </div>
           </div>
         </div>
@@ -234,9 +245,20 @@ interface AttributionResponse {
                   </div>
                 </div>
                 
-                <div class="prompt-preview-box" *ngIf="commentaryPrompt">
-                  <h5>Prompt Sent to LLM</h5>
-                  <textarea readonly rows="10" style="width:100%;font-size:12px;background:#f5f5f5;border-radius:6px;padding:8px;">{{ commentaryPrompt }}</textarea>
+                <div class="prompt-section" *ngIf="commentaryPrompt">
+                  <div class="collapsible-header small" (click)="toggleCommentaryPrompt()">
+                    <div class="header-content">
+                      <mat-icon class="section-icon small">code</mat-icon>
+                      <h5>Prompt Sent to LLM</h5>
+                    </div>
+                    <mat-icon class="toggle-icon">{{ showCommentaryPrompt ? 'expand_less' : 'expand_more' }}</mat-icon>
+                  </div>
+                  
+                  <div class="collapsible-content" [class.expanded]="showCommentaryPrompt">
+                    <div class="prompt-preview-box">
+                      <textarea readonly rows="10" style="width:100%;font-size:12px;background:var(--glass-secondary);border:1px solid rgba(255,255,255,0.2);border-radius:6px;padding:12px;color:var(--text-primary);font-family:'Courier New',monospace;">{{ commentaryPrompt }}</textarea>
+                    </div>
+                  </div>
                 </div>
                 
                 <div class="commentary-content" [innerHTML]="formatCommentary(commentaryResponse.response)">
@@ -306,7 +328,7 @@ interface AttributionResponse {
               <!-- Q&A History -->
               <div class="qa-history" *ngIf="qaHistory.length > 0">
                 <h4>Q&A History</h4>
-                <div *ngFor="let qa of qaHistory; trackBy: trackByIndex" 
+                <div *ngFor="let qa of qaHistory; let i = index; trackBy: trackByIndex" 
                      class="qa-item glass-card">
                   <div class="question">
                     <mat-icon>help_outline</mat-icon>
@@ -315,11 +337,32 @@ interface AttributionResponse {
                   <mat-divider></mat-divider>
                   <div class="answer">
                     <mat-icon>lightbulb</mat-icon>
-                    <strong>A:</strong> {{ qa.response }}
+                    <div class="answer-content">
+                      <strong>A:</strong> 
+                      <div class="answer-text">{{ getCleanResponse(qa.response) }}</div>
+                    </div>
                   </div>
+                  
+                  <!-- Collapsible Prompt Section for Q&A -->
+                  <div class="prompt-section" *ngIf="qa.prompt">
+                    <div class="collapsible-header small" (click)="toggleQaPrompt(i)">
+                      <div class="header-content">
+                        <mat-icon class="section-icon small">code</mat-icon>
+                        <span>View Prompt</span>
+                      </div>
+                      <mat-icon class="toggle-icon">{{ showQaPrompts[i] ? 'expand_less' : 'expand_more' }}</mat-icon>
+                    </div>
+                    
+                    <div class="collapsible-content" [class.expanded]="showQaPrompts[i]">
+                      <div class="prompt-preview-box">
+                        <textarea readonly rows="6" style="width:100%;font-size:11px;background:var(--glass-secondary);border:1px solid rgba(255,255,255,0.2);border-radius:6px;padding:8px;color:var(--text-primary);font-family:'Courier New',monospace;">{{ qa.prompt }}</textarea>
+                      </div>
+                    </div>
+                  </div>
+                  
                   <div class="qa-meta">
                     <span>Context used: {{ qa.context_used || 0 }} chunks</span>
-                    <button mat-icon-button (click)="copyToClipboard(qa.response)">
+                    <button mat-icon-button (click)="copyToClipboard(getCleanResponse(qa.response))">
                       <mat-icon>content_copy</mat-icon>
                     </button>
                   </div>
@@ -747,6 +790,113 @@ interface AttributionResponse {
       gap: 8px;
     }
 
+    /* Collapsible Sections */
+    .collapsible-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px 20px;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      border-radius: 12px;
+      background: var(--glass-accent);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      margin-bottom: 12px;
+    }
+
+    .collapsible-header:hover {
+      background: var(--glass-secondary);
+      transform: translateY(-1px);
+    }
+
+    .collapsible-header.small {
+      padding: 12px 16px;
+      margin-bottom: 8px;
+    }
+
+    .header-content {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .header-content h3 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 500;
+    }
+
+    .header-content h5 {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 500;
+    }
+
+    .header-content span {
+      font-size: 14px;
+      font-weight: 500;
+    }
+
+    .section-icon {
+      color: var(--text-primary);
+      opacity: 0.8;
+    }
+
+    .section-icon.small {
+      font-size: 18px;
+      width: 18px;
+      height: 18px;
+    }
+
+    .toggle-icon {
+      transition: transform 0.3s ease;
+      color: var(--text-secondary);
+    }
+
+    .collapsible-content {
+      max-height: 0;
+      overflow: hidden;
+      transition: all 0.3s ease;
+      opacity: 0;
+    }
+
+    .collapsible-content.expanded {
+      max-height: 2000px;
+      opacity: 1;
+      margin-bottom: 16px;
+    }
+
+    .prompt-section {
+      margin: 16px 0;
+    }
+
+    .prompt-preview-box {
+      padding: 0;
+    }
+
+    .prompt-preview-box textarea {
+      resize: vertical;
+      min-height: 100px;
+    }
+
+    .answer-content {
+      flex: 1;
+    }
+
+    .answer-text {
+      margin-top: 8px;
+      padding: 12px;
+      background: var(--glass-secondary);
+      border-radius: 8px;
+      border-left: 3px solid #4caf50;
+      line-height: 1.6;
+      white-space: pre-wrap;
+    }
+
+    .chunks-section .collapsible-content.expanded {
+      max-height: 1000px;
+    }
+
     /* Responsive Design */
     @media (max-width: 768px) {
       .attribution-header {
@@ -766,6 +916,14 @@ interface AttributionResponse {
 
       .sessions-grid {
         grid-template-columns: 1fr;
+      }
+
+      .collapsible-header {
+        padding: 14px 16px;
+      }
+
+      .collapsible-header.small {
+        padding: 10px 12px;
       }
     }
   `]
@@ -793,6 +951,11 @@ export class AttributionComponent implements OnInit {
   // UI State
   isDragOver = false;
   activeSessions: AttributionSession[] = [];
+  
+  // Collapsible sections
+  showChunks = false;
+  showCommentaryPrompt = false;
+  showQaPrompts: { [key: number]: boolean } = {};
 
   sampleQuestions = [
     'What were the top 3 contributors by total attribution?',
@@ -992,6 +1155,48 @@ export class AttributionComponent implements OnInit {
 
   trackByIndex(index: number, item: any): number {
     return index;
+  }
+
+  toggleChunks() {
+    this.showChunks = !this.showChunks;
+  }
+
+  toggleCommentaryPrompt() {
+    this.showCommentaryPrompt = !this.showCommentaryPrompt;
+  }
+
+  toggleQaPrompt(index: number) {
+    this.showQaPrompts[index] = !this.showQaPrompts[index];
+  }
+
+  getCleanResponse(response: string): string {
+    // Clean up Q&A response - remove JSON formatting and unwanted characters
+    if (!response) return 'No response available';
+    
+    try {
+      // Try to parse as JSON in case it's wrapped
+      const parsed = JSON.parse(response);
+      if (typeof parsed === 'string') {
+        return parsed.trim();
+      }
+      if (parsed.response) {
+        return parsed.response.trim();
+      }
+      if (parsed.answer) {
+        return parsed.answer.trim();
+      }
+    } catch {
+      // Not JSON, continue with string cleaning
+    }
+    
+    // Clean up common formatting issues
+    return response
+      .replace(/^["']|["']$/g, '') // Remove quotes at start/end
+      .replace(/\\n/g, '\n')       // Fix escaped newlines
+      .replace(/\\"/g, '"')        // Fix escaped quotes
+      .replace(/^\s*{\s*"response"\s*:\s*"?|"?\s*}\s*$/g, '') // Remove JSON wrapper
+      .replace(/^Response:\s*/i, '') // Remove "Response:" prefix
+      .trim();
   }
 
   async loadActiveSessions() {
