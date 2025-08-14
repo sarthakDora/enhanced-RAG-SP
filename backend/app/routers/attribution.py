@@ -4,12 +4,12 @@ Handles Excel upload, processing, and Q&A for performance attribution reports.
 """
 
 from fastapi import APIRouter, File, UploadFile, HTTPException, Depends, Form
-from fastapi.responses import JSONResponse
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Literal
 import uuid
 import tempfile
 import os
 import logging
+from functools import lru_cache
 
 from ..services.performance_attribution_service import PerformanceAttributionService
 from ..services.ollama_service import OllamaService
@@ -20,47 +20,56 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/attribution", tags=["attribution"])
 
-# Dependency injection
-def get_ollama_service():
+# ---------------------------------------------------------------------
+# Dependency injection (singleton clients)
+# ---------------------------------------------------------------------
+
+@lru_cache(maxsize=1)
+def get_ollama_service() -> OllamaService:
     return OllamaService()
 
-def get_qdrant_service():
+@lru_cache(maxsize=1)
+def get_qdrant_service() -> QdrantService:
     return QdrantService()
 
 def get_attribution_service(
     ollama: OllamaService = Depends(get_ollama_service),
-    qdrant: QdrantService = Depends(get_qdrant_service)
-):
+    qdrant: QdrantService = Depends(get_qdrant_service),
+) -> PerformanceAttributionService:
     return PerformanceAttributionService(ollama, qdrant)
 
+# ---------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------
 
-@router.post("/upload", response_model=Dict[str, Any])
+@router.post("/upload")
 async def upload_attribution_file(
     file: UploadFile = File(...),
     session_id: Optional[str] = Form(None),
-    attribution_service: PerformanceAttributionService = Depends(get_attribution_service)
-):
+    attribution_service: PerformanceAttributionService = Depends(get_attribution_service),
+) -> Dict[str, Any]:
     """
     Upload and process an Excel attribution file.
-    
     Creates session-scoped Qdrant collection with row-centric chunks.
     """
     try:
-        # Validate file type
-        if not file.filename.endswith(('.xlsx', '.xls')):
-            raise HTTPException(status_code=400, detail="Only Excel files (.xlsx, .xls) are supported")
-        
+        # Validate file type (case-insensitive)
+        fname = (file.filename or "").lower()
+        if not (fname.endswith(".xlsx") or fname.endswith(".xls") or fname.endswith(".xlsm")):
+            raise HTTPException(status_code=400, detail="Only Excel files (.xlsx, .xls, .xlsm) are supported")
+
         # Generate session ID if not provided
         if not session_id:
             session_id = str(uuid.uuid4())
-        
+
         # Save uploaded file temporarily
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_file:
-            content = await file.read()
-            tmp_file.write(content)
-            tmp_file_path = tmp_file.name
-        
+        tmp_file_path = None
         try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(fname)[1] or ".xlsx") as tmp_file:
+                content = await file.read()
+                tmp_file.write(content)
+                tmp_file_path = tmp_file.name
+
             # Process the attribution file
             result = await attribution_service.process_attribution_file(tmp_file_path, session_id)
 
@@ -68,163 +77,159 @@ async def upload_attribution_file(
             result.update({
                 "filename": file.filename,
                 "file_size": len(content),
-                "upload_success": True
+                "session_id": session_id,
+                "upload_success": True,
             })
 
-            # Add chunk data for UI display
-            if hasattr(attribution_service, 'last_chunks') and attribution_service.last_chunks:
+            # Normalize chunk data for UI display
+            # Prefer the chunks already in `result`; else echo from attribution_service.last_chunks
+            if "chunks" in result and isinstance(result["chunks"], list) and result["chunks"]:
                 result["chunks"] = [
                     {
-                        "filename": chunk.payload.get("bucket", "Unknown"),
-                        "content": chunk.text,
-                        "document_type": chunk.payload.get("asset_class", "unknown"),
-                        "chunk_type": chunk.chunk_type
+                        "filename": c.get("bucket", "Unknown"),
+                        "content": c.get("text", ""),
+                        "document_type": c.get("asset_class", "unknown"),
+                        "chunk_type": c.get("chunk_type", "row"),
                     }
-                    for chunk in getattr(attribution_service, 'last_chunks', [])
+                    for c in result["chunks"]
                 ]
-            elif "chunks" in result:
-                # If process_attribution_file returns chunks
+            elif getattr(attribution_service, "last_chunks", None):
                 result["chunks"] = [
                     {
-                        "filename": chunk.get("bucket", "Unknown"),
-                        "content": chunk.get("text", ""),
-                        "document_type": chunk.get("asset_class", "unknown"),
-                        "chunk_type": chunk.get("chunk_type", "row")
+                        "filename": ch.payload.get("bucket", "Unknown"),
+                        "content": ch.text,
+                        "document_type": ch.payload.get("asset_class", "unknown"),
+                        "chunk_type": ch.chunk_type,
                     }
-                    for chunk in result["chunks"]
+                    for ch in attribution_service.last_chunks
                 ]
             else:
                 result["chunks"] = []
 
             logger.info(f"Successfully processed attribution file: {file.filename} for session {session_id}")
             return result
-            
+
         finally:
-            # Clean up temporary file with retry mechanism for Windows file locking
-            import time
-            for attempt in range(3):
-                try:
-                    os.unlink(tmp_file_path)
-                    break
-                except (OSError, PermissionError) as e:
-                    if attempt < 2:
-                        time.sleep(0.1)  # Wait 100ms before retry
-                        continue
-                    logger.warning(f"Could not delete temporary file after 3 attempts: {e}")
-            
+            # Clean up temporary file (retry to avoid Windows file locks)
+            if tmp_file_path and os.path.exists(tmp_file_path):
+                import time
+                for attempt in range(3):
+                    try:
+                        os.unlink(tmp_file_path)
+                        break
+                    except (OSError, PermissionError) as e:
+                        if attempt < 2:
+                            time.sleep(0.15)
+                            continue
+                        logger.warning(f"Could not delete temporary file after 3 attempts: {e}")
+
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error processing attribution file: {e}")
+        logger.exception("Error processing attribution file")
         raise HTTPException(status_code=500, detail=f"Failed to process attribution file: {str(e)}")
 
 
-@router.post("/question", response_model=Dict[str, Any])
+@router.post("/question")
 async def ask_attribution_question(
     session_id: str = Form(...),
     question: str = Form(...),
-    mode: str = Form("qa", regex="^(qa|commentary)$"),
+    mode: Literal["qa", "commentary"] = Form("qa"),
     context: Optional[str] = Form(None),
-    attribution_service: PerformanceAttributionService = Depends(get_attribution_service)
-):
+    attribution_service: PerformanceAttributionService = Depends(get_attribution_service),
+) -> Dict[str, Any]:
     """
     Ask a question about attribution data using RAG.
-    
+
     Modes:
     - qa: Document-based Q&A (strict context adherence)
     - commentary: Generate professional PM commentary
     """
     try:
-        if not question.strip():
+        if not question or not question.strip():
             raise HTTPException(status_code=400, detail="Question cannot be empty")
-        
-        # Pass context to service if provided
+
         response = await attribution_service.answer_question(session_id, question, mode, context=context)
-        
-        logger.info(f"Answered attribution question for session {session_id}: {question[:50]}...")
+        logger.info(f"Answered attribution question for session {session_id}: {question[:80]}...")
         return response
-        
+
     except ValueError as e:
         # Session not found or no data
         raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error answering attribution question: {e}")
+        logger.exception("Error answering attribution question")
         raise HTTPException(status_code=500, detail=f"Failed to answer question: {str(e)}")
 
 
-@router.get("/session/{session_id}/stats", response_model=Dict[str, Any])
+@router.get("/session/{session_id}/stats")
 async def get_session_stats(
     session_id: str,
-    attribution_service: PerformanceAttributionService = Depends(get_attribution_service)
-):
+    attribution_service: PerformanceAttributionService = Depends(get_attribution_service),
+) -> Dict[str, Any]:
     """Get statistics for an attribution session."""
     try:
         stats = await attribution_service.get_session_stats(session_id)
         return stats
     except Exception as e:
-        logger.error(f"Error getting session stats: {e}")
+        logger.exception("Error getting session stats")
         raise HTTPException(status_code=500, detail=f"Failed to get session stats: {str(e)}")
 
 
-@router.delete("/session/{session_id}", response_model=Dict[str, Any])
+@router.delete("/session/{session_id}")
 async def clear_session(
     session_id: str,
-    attribution_service: PerformanceAttributionService = Depends(get_attribution_service)
-):
+    attribution_service: PerformanceAttributionService = Depends(get_attribution_service),
+) -> Dict[str, Any]:
     """Clear all attribution data for a session."""
     try:
         success = await attribution_service.clear_session(session_id)
         return {
             "session_id": session_id,
             "cleared": success,
-            "message": "Session cleared successfully" if success else "Failed to clear session"
+            "message": "Session cleared successfully" if success else "Failed to clear session",
         }
     except Exception as e:
-        logger.error(f"Error clearing session: {e}")
+        logger.exception("Error clearing session")
         raise HTTPException(status_code=500, detail=f"Failed to clear session: {str(e)}")
 
 
-@router.post("/commentary", response_model=Dict[str, Any])
+@router.post("/commentary")
 async def generate_commentary(
     session_id: str = Form(...),
     period: Optional[str] = Form(None),
     context: Optional[str] = Form(None),
-    attribution_service: PerformanceAttributionService = Depends(get_attribution_service)
-):
+    attribution_service: PerformanceAttributionService = Depends(get_attribution_service),
+) -> Dict[str, Any]:
     """
     Generate professional attribution commentary for a session.
-    
     Uses the commentary mode with institutional PM-grade output.
     """
     try:
-        # Build commentary request
-        if period:
-            question = f"Generate {period} attribution commentary"
-        else:
-            question = "Generate attribution commentary"
-        # Pass context to service if provided
+        question = f"Generate {period} attribution commentary" if period else "Generate attribution commentary"
         response = await attribution_service.answer_question(session_id, question, mode="commentary", context=context)
-        
         logger.info(f"Generated commentary for session {session_id}")
         return response
-        
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        logger.error(f"Error generating commentary: {e}")
+        logger.exception("Error generating commentary")
         raise HTTPException(status_code=500, detail=f"Failed to generate commentary: {str(e)}")
 
 
 @router.get("/health")
 async def health_check(
-    attribution_service: PerformanceAttributionService = Depends(get_attribution_service)
-):
+    attribution_service: PerformanceAttributionService = Depends(get_attribution_service),
+) -> Dict[str, Any]:
     """Health check for attribution service dependencies."""
     try:
         health_status = {
             "attribution_service": "ok",
             "ollama": "unknown",
-            "qdrant": "unknown"
+            "qdrant": "unknown",
         }
-        
+
         # Check Ollama health
         try:
             if attribution_service.ollama:
@@ -232,7 +237,7 @@ async def health_check(
                 health_status["ollama"] = "ok"
         except Exception as e:
             health_status["ollama"] = f"error: {str(e)}"
-        
+
         # Check Qdrant health
         try:
             if attribution_service.qdrant:
@@ -240,30 +245,25 @@ async def health_check(
                 health_status["qdrant"] = "ok"
         except Exception as e:
             health_status["qdrant"] = f"error: {str(e)}"
-        
-        # Overall health
-        overall_healthy = all(status == "ok" for status in health_status.values())
+
+        overall_healthy = all(v == "ok" for v in health_status.values())
         health_status["overall"] = "healthy" if overall_healthy else "degraded"
-        
         return health_status
-        
+
     except Exception as e:
-        logger.error(f"Health check error: {e}")
-        return {
-            "overall": "error",
-            "message": str(e)
-        }
+        logger.exception("Health check error")
+        return {"overall": "error", "message": str(e)}
 
 
 @router.get("/examples")
-async def get_usage_examples():
+async def get_usage_examples() -> Dict[str, Any]:
     """Get usage examples for the attribution RAG API."""
     return {
         "upload_example": {
             "endpoint": "POST /attribution/upload",
             "description": "Upload Excel attribution file",
-            "curl_example": '''curl -X POST "http://localhost:8000/attribution/upload" \\
-  -F "file=@Q2_2025_Attribution.xlsx" \\
+            "curl_example": '''curl -X POST "http://localhost:8000/attribution/upload" \
+  -F "file=@Q2_2025_Attribution.xlsx" \
   -F "session_id=my_session_123"''',
             "response_example": {
                 "status": "success",
@@ -278,9 +278,9 @@ async def get_usage_examples():
         "qa_example": {
             "endpoint": "POST /attribution/question",
             "description": "Ask Q&A questions about attribution data",
-            "curl_example": '''curl -X POST "http://localhost:8000/attribution/question" \\
-  -F "session_id=my_session_123" \\
-  -F "question=Which sectors had negative FX but positive selection?" \\
+            "curl_example": '''curl -X POST "http://localhost:8000/attribution/question" \
+  -F "session_id=my_session_123" \
+  -F "question=Which sectors had negative FX but positive selection?" \
   -F "mode=qa"''',
             "response_example": {
                 "mode": "qa",
@@ -292,8 +292,8 @@ async def get_usage_examples():
         "commentary_example": {
             "endpoint": "POST /attribution/commentary",
             "description": "Generate professional attribution commentary",
-            "curl_example": '''curl -X POST "http://localhost:8000/attribution/commentary" \\
-  -F "session_id=my_session_123" \\
+            "curl_example": '''curl -X POST "http://localhost:8000/attribution/commentary" \
+  -F "session_id=my_session_123" \
   -F "period=Q2 2025"''',
             "response_example": {
                 "mode": "commentary",
