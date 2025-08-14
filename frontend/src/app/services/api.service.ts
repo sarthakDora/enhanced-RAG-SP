@@ -202,4 +202,8 @@ export class ApiService {
   getAttributionExamples(): Observable<any> {
     return this.http.get(`${this.baseUrl}/attribution/examples`);
   }
+
+  getAttributionCollections(): Observable<any> {
+    return this.http.get(`${this.baseUrl}/attribution/collections`);
+  }
 }

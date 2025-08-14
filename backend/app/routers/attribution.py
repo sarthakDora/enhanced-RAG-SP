@@ -255,6 +255,53 @@ async def health_check(
         return {"overall": "error", "message": str(e)}
 
 
+@router.get("/collections")
+async def list_collections(
+    attribution_service: PerformanceAttributionService = Depends(get_attribution_service),
+) -> Dict[str, Any]:
+    """List all available collections and their statistics."""
+    try:
+        # Get all session collections
+        session_collections = await attribution_service.qdrant.list_session_collections()
+        
+        # Get collection statistics
+        collections_info = []
+        
+        for session_id, collection_name in session_collections.items():
+            try:
+                # Get collection info
+                collection_exists = await attribution_service.qdrant.collection_exists(collection_name)
+                if collection_exists:
+                    # Get collection stats
+                    stats = await attribution_service.qdrant.get_collection_info(collection_name)
+                    collections_info.append({
+                        "session_id": session_id,
+                        "collection_name": collection_name,
+                        "points_count": stats.get("points_count", 0),
+                        "vectors_count": stats.get("vectors_count", 0),
+                        "status": "active"
+                    })
+            except Exception as e:
+                logger.warning(f"Failed to get stats for collection {collection_name}: {e}")
+                collections_info.append({
+                    "session_id": session_id,
+                    "collection_name": collection_name,
+                    "points_count": 0,
+                    "vectors_count": 0,
+                    "status": "error"
+                })
+        
+        return {
+            "collections": collections_info,
+            "total_collections": len(collections_info),
+            "active_sessions": len(session_collections)
+        }
+        
+    except Exception as e:
+        logger.exception("Error listing collections")
+        raise HTTPException(status_code=500, detail=f"Failed to list collections: {str(e)}")
+
+
 @router.get("/examples")
 async def get_usage_examples() -> Dict[str, Any]:
     """Get usage examples for the attribution RAG API."""

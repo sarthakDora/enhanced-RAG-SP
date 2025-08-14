@@ -13,6 +13,7 @@ import { MatTabsModule } from '@angular/material/tabs';
 import { MatDividerModule } from '@angular/material/divider';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { MatDialog } from '@angular/material/dialog';
+import { MatTooltipModule } from '@angular/material/tooltip';
 import { Subscription } from 'rxjs';
 
 import { ApiService } from '../../services/api.service';
@@ -44,6 +45,14 @@ interface AttributionResponse {
   context_used?: number;
 }
 
+interface CollectionInfo {
+  session_id: string;
+  collection_name: string;
+  points_count: number;
+  vectors_count: number;
+  status: string;
+}
+
 @Component({
   selector: 'app-documents',
   standalone: true,
@@ -59,7 +68,8 @@ interface AttributionResponse {
     MatSelectModule,
     MatInputModule,
     MatTabsModule,
-    MatDividerModule
+    MatDividerModule,
+    MatTooltipModule
   ],
   template: `
     <div class="documents-container fade-in">
@@ -191,7 +201,7 @@ interface AttributionResponse {
               </div>
               <div class="file-status">
                 <mat-icon [class]="uploadFile.status">
-                  {{ getStatusIcon(uploadFile.status) }}
+                  {{ getUploadStatusIcon(uploadFile.status) }}
                 </mat-icon>
               </div>
             </div>
@@ -213,22 +223,22 @@ interface AttributionResponse {
           <h4>✅ Attribution File Processed Successfully</h4>
           <div class="result-grid">
             <div class="result-item">
-              <strong>Session ID:</strong> {{ attributionResult?.session_id }}
+              <strong>Session ID:</strong> {{ attributionResult.session_id }}
             </div>
             <div class="result-item">
-              <strong>Asset Class:</strong> {{ attributionResult?.asset_class }}
+              <strong>Asset Class:</strong> {{ attributionResult.asset_class }}
             </div>
             <div class="result-item">
-              <strong>Attribution Level:</strong> {{ attributionResult?.attribution_level }}
+              <strong>Attribution Level:</strong> {{ attributionResult.attribution_level }}
             </div>
             <div class="result-item">
-              <strong>Period:</strong> {{ attributionResult?.period }}
+              <strong>Period:</strong> {{ attributionResult.period }}
             </div>
             <div class="result-item">
-              <strong>Chunks Created:</strong> {{ attributionResult?.chunks_created }}
+              <strong>Chunks Created:</strong> {{ attributionResult.chunks_created }}
             </div>
             <div class="result-item">
-              <strong>Collection:</strong> {{ attributionResult?.collection_name }}
+              <strong>Collection:</strong> {{ attributionResult.collection_name }}
             </div>
           </div>
         </div>
@@ -253,7 +263,7 @@ interface AttributionResponse {
                       <mat-label>Period (optional)</mat-label>
                       <input matInput [(ngModel)]="commentaryPeriod" 
                              placeholder="e.g., Q2 2025"
-                             [value]="attributionResult?.period">
+                             [value]="attributionResult.period">
                     </mat-form-field>
                     
                     <button mat-raised-button 
@@ -405,6 +415,60 @@ interface AttributionResponse {
             <div class="stat-content">
               <h3>{{ stats.average_chunks_per_document.toFixed(1) }}</h3>
               <p>Avg Chunks/Doc</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Attribution Collections List -->
+      <div class="collections-list glass-card" *ngIf="attributionCollections.length > 0">
+        <div class="list-header">
+          <h3>Attribution Collections</h3>
+          <button mat-icon-button 
+                  class="glass-button"
+                  (click)="refreshCollections()"
+                  matTooltip="Refresh collections">
+            <mat-icon>refresh</mat-icon>
+          </button>
+        </div>
+
+        <div class="collections-grid">
+          <div *ngFor="let collection of attributionCollections" 
+               class="collection-card glass-card">
+            
+            <div class="collection-header">
+              <mat-icon class="collection-icon">analytics</mat-icon>
+              <div class="collection-title">
+                <h4>{{ collection.session_id }}</h4>
+                <p class="collection-type">Attribution Dataset</p>
+              </div>
+              <button mat-icon-button 
+                      class="delete-button"
+                      (click)="deleteCollection(collection, $event)"
+                      matTooltip="Delete collection">
+                <mat-icon>delete</mat-icon>
+              </button>
+            </div>
+
+            <div class="collection-meta">
+              <div class="meta-item">
+                <mat-icon>storage</mat-icon>
+                <span>{{ collection.points_count }} data points</span>
+              </div>
+              
+              <div class="meta-item">
+                <mat-icon>view_module</mat-icon>
+                <span>{{ collection.vectors_count }} vectors</span>
+              </div>
+              
+              <div class="meta-item" [class]="getStatusClass(collection.status)">
+                <mat-icon>{{ getStatusIcon(collection.status) }}</mat-icon>
+                <span>{{ collection.status }}</span>
+              </div>
+            </div>
+
+            <div class="collection-footer">
+              <span class="collection-name">{{ collection.collection_name }}</span>
             </div>
           </div>
         </div>
@@ -739,6 +803,91 @@ interface AttributionResponse {
       font-size: 14px;
     }
 
+    .collections-list {
+      padding: 24px;
+      margin-bottom: 24px;
+    }
+
+    .collections-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 16px;
+    }
+
+    .collection-card {
+      padding: 20px;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      border-radius: 12px;
+      border-left: 4px solid #667eea;
+    }
+
+    .collection-card:hover {
+      transform: translateY(-2px);
+      background: var(--glass-accent) !important;
+    }
+
+    .collection-header {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .collection-icon {
+      color: #667eea;
+      margin-top: 4px;
+    }
+
+    .collection-title {
+      flex: 1;
+    }
+
+    .collection-title h4 {
+      margin: 0 0 4px 0;
+      font-size: 16px;
+      font-weight: 500;
+      line-height: 1.3;
+    }
+
+    .collection-type {
+      margin: 0;
+      font-size: 12px;
+      color: var(--text-secondary);
+      text-transform: capitalize;
+    }
+
+    .collection-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .collection-footer {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: monospace;
+    }
+
+    .collection-name {
+      background: var(--glass-secondary);
+      padding: 4px 8px;
+      border-radius: 4px;
+    }
+
+    .status-active {
+      color: #4caf50;
+    }
+
+    .status-error {
+      color: #f44336;
+    }
+
+    .status-unknown {
+      color: #ff9800;
+    }
+
     .documents-list {
       padding: 24px;
     }
@@ -989,7 +1138,7 @@ interface AttributionResponse {
     .control-row {
       display: flex;
       gap: 16px;
-      align-items: end;
+      align-items: flex-end;
     }
 
     .control-row mat-form-field {
@@ -1146,6 +1295,10 @@ interface AttributionResponse {
         grid-template-columns: 1fr;
       }
 
+      .collections-grid {
+        grid-template-columns: 1fr;
+      }
+
       .upload-actions {
         flex-direction: column;
       }
@@ -1164,6 +1317,9 @@ export class DocumentsComponent implements OnInit, OnDestroy {
   isDragOver = false;
   isUploading = false;
   hasAttributionFiles = false;
+  
+  // Collections management
+  attributionCollections: CollectionInfo[] = [];
   
   // Attribution-specific properties
   attributionResult: AttributionSession | null = null;
@@ -1203,6 +1359,7 @@ export class DocumentsComponent implements OnInit, OnDestroy {
   ngOnInit() {
     this.loadDocuments();
     this.loadStats();
+    this.loadAttributionCollections();
     
     // Subscribe to documents updates
     const docUpdateSub = this.apiService.documentsUpdated$.subscribe(() => {
@@ -1416,7 +1573,7 @@ export class DocumentsComponent implements OnInit, OnDestroy {
     }
   }
 
-  getStatusIcon(status: string): string {
+  getUploadStatusIcon(status: string): string {
     switch (status) {
       case 'completed':
         return 'check_circle';
@@ -1426,6 +1583,17 @@ export class DocumentsComponent implements OnInit, OnDestroy {
         return 'hourglass_empty';
       default:
         return 'radio_button_unchecked';
+    }
+  }
+
+  getStatusIcon(status: string): string {
+    switch (status) {
+      case 'active':
+        return 'check_circle';
+      case 'error':
+        return 'error';
+      default:
+        return 'help_outline';
     }
   }
 
@@ -1606,5 +1774,44 @@ export class DocumentsComponent implements OnInit, OnDestroy {
 
   trackByIndex(index: number, item: any): number {
     return index;
+  }
+
+  // Collection management methods
+  async loadAttributionCollections() {
+    try {
+      const response = await this.apiService.getAttributionCollections().toPromise();
+      this.attributionCollections = response.collections || [];
+    } catch (error) {
+      console.error('Failed to load attribution collections:', error);
+    }
+  }
+
+  refreshCollections() {
+    this.loadAttributionCollections();
+  }
+
+  async deleteCollection(collection: CollectionInfo, event: Event) {
+    event.stopPropagation();
+    
+    if (confirm(`Are you sure you want to delete the attribution collection "${collection.session_id}"? This action cannot be undone.`)) {
+      try {
+        await this.apiService.clearAttributionSession(collection.session_id).toPromise();
+        this.showSuccess('Attribution collection deleted successfully');
+        this.loadAttributionCollections();
+      } catch (error: any) {
+        this.showError(error.error?.detail || 'Failed to delete collection');
+      }
+    }
+  }
+
+  getStatusClass(status: string): string {
+    switch (status) {
+      case 'active':
+        return 'status-active';
+      case 'error':
+        return 'status-error';
+      default:
+        return 'status-unknown';
+    }
   }
 }
