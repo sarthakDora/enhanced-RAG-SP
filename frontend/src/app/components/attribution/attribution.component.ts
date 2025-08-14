@@ -11,8 +11,12 @@ import { MatChipsModule } from '@angular/material/chips';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { MatTabsModule } from '@angular/material/tabs';
 import { MatDividerModule } from '@angular/material/divider';
+import { MatDialog } from '@angular/material/dialog';
+import { MatTooltipModule } from '@angular/material/tooltip';
+import { MatMenuModule } from '@angular/material/menu';
 
 import { ApiService } from '../../services/api.service';
+import { ChatSettingsDialogComponent } from '../chat/chat-settings-dialog.component';
 
 interface AttributionSession {
   session_id: string;
@@ -36,6 +40,14 @@ interface AttributionResponse {
   error?: string;
 }
 
+interface CollectionInfo {
+  session_id: string;
+  collection_name: string;
+  points_count: number;
+  vectors_count: number;
+  status: string;
+}
+
 @Component({
   selector: 'app-attribution',
   standalone: true,
@@ -50,7 +62,9 @@ interface AttributionResponse {
     MatProgressBarModule,
     MatChipsModule,
     MatTabsModule,
-    MatDividerModule
+    MatDividerModule,
+    MatTooltipModule,
+    MatMenuModule
   ],
   template: `
     <div class="attribution-container fade-in">
@@ -62,11 +76,56 @@ interface AttributionResponse {
         </div>
         
         <div class="header-actions">
+          <button mat-icon-button 
+                  class="glass-button"
+                  (click)="toggleSettings()"
+                  matTooltip="Attribution Settings">
+            <mat-icon>tune</mat-icon>
+          </button>
+          
           <button mat-raised-button 
                   class="glass-button"
                   (click)="triggerFileInput()">
             <mat-icon>upload_file</mat-icon>
             Upload Attribution File
+          </button>
+        </div>
+      </div>
+
+      <!-- Collection Selection Section -->
+      <div class="collection-selection glass-card" *ngIf="availableCollections.length > 0">
+        <h3>Select Attribution Data</h3>
+        <p class="section-description">
+          Choose an existing attribution dataset or upload a new one to analyze.
+        </p>
+        
+        <div class="collection-controls">
+          <mat-form-field appearance="outline" class="collection-field">
+            <mat-label>Attribution Dataset</mat-label>
+            <mat-select [(ngModel)]="selectedCollectionId" 
+                        (selectionChange)="onCollectionSelectionChange($event.value)">
+              <mat-option value="">Select a dataset...</mat-option>
+              <mat-option *ngFor="let collection of availableCollections" 
+                          [value]="collection.session_id">
+                {{ collection.session_id }} 
+                <span class="collection-meta">({{ collection.points_count }} data points)</span>
+              </mat-option>
+            </mat-select>
+          </mat-form-field>
+          
+          <button mat-icon-button 
+                  class="glass-button refresh-btn"
+                  (click)="refreshCollections()"
+                  matTooltip="Refresh collections">
+            <mat-icon>refresh</mat-icon>
+          </button>
+          
+          <button mat-icon-button 
+                  class="glass-button delete-btn"
+                  *ngIf="selectedCollectionId"
+                  (click)="deleteSelectedCollection()"
+                  matTooltip="Delete selected dataset">
+            <mat-icon>delete</mat-icon>
           </button>
         </div>
       </div>
@@ -147,22 +206,22 @@ interface AttributionResponse {
           <h4>✅ Attribution File Processed Successfully</h4>
           <div class="result-grid">
             <div class="result-item">
-              <strong>Session ID:</strong> {{ uploadResult?.session_id }}
+              <strong>Session ID:</strong> {{ uploadResult.session_id }}
             </div>
             <div class="result-item">
-              <strong>Asset Class:</strong> {{ uploadResult?.asset_class }}
+              <strong>Asset Class:</strong> {{ uploadResult.asset_class }}
             </div>
             <div class="result-item">
-              <strong>Attribution Level:</strong> {{ uploadResult?.attribution_level }}
+              <strong>Attribution Level:</strong> {{ uploadResult.attribution_level }}
             </div>
             <div class="result-item">
-              <strong>Period:</strong> {{ uploadResult?.period }}
+              <strong>Period:</strong> {{ uploadResult.period }}
             </div>
             <div class="result-item">
-              <strong>Chunks Created:</strong> {{ uploadResult?.chunks_created }}
+              <strong>Chunks Created:</strong> {{ uploadResult.chunks_created }}
             </div>
             <div class="result-item">
-              <strong>Collection:</strong> {{ uploadResult?.collection_name }}
+              <strong>Collection:</strong> {{ uploadResult.collection_name }}
             </div>
           </div>
         </div>
@@ -215,17 +274,27 @@ interface AttributionResponse {
                     <mat-label>Period (optional)</mat-label>
                     <input matInput [(ngModel)]="commentaryPeriod" 
                            placeholder="e.g., Q2 2025"
-                           [value]="uploadResult?.period">
+                           [value]="uploadResult.period">
                   </mat-form-field>
                   
-                  <button mat-raised-button 
-                          color="primary"
-                          class="glass-button"
-                          [disabled]="isGeneratingCommentary"
-                          (click)="generateCommentary()">
-                    <mat-icon>auto_awesome</mat-icon>
-                    Generate Commentary
-                  </button>
+                  <div class="button-group">
+                    <button mat-raised-button 
+                            color="primary"
+                            class="glass-button"
+                            [disabled]="isGeneratingCommentary"
+                            (click)="generateCommentary()">
+                      <mat-icon>auto_awesome</mat-icon>
+                      Generate Commentary
+                    </button>
+                    
+                    <button mat-raised-button 
+                            class="glass-button docx-button"
+                            [disabled]="!commentaryResponse || isGeneratingDocx"
+                            (click)="generateDocxFile()">
+                      <mat-icon>description</mat-icon>
+                      Generate Word .docx
+                    </button>
+                  </div>
                 </div>
 
                 <div class="progress-indicator" *ngIf="isGeneratingCommentary">
@@ -268,6 +337,14 @@ interface AttributionResponse {
                   <button mat-button class="glass-button" (click)="copyToClipboard(commentaryResponse.response)">
                     <mat-icon>content_copy</mat-icon>
                     Copy Commentary
+                  </button>
+                  
+                  <button mat-button 
+                          class="glass-button"
+                          [disabled]="isGeneratingDocx"
+                          (click)="generateDocxFile()">
+                    <mat-icon>description</mat-icon>
+                    {{ isGeneratingDocx ? 'Generating...' : 'Download as Word' }}
                   </button>
                 </div>
               </div>
@@ -441,10 +518,68 @@ interface AttributionResponse {
     .header-actions {
       display: flex;
       gap: 12px;
+      align-items: center;
+    }
+
+    .collection-selection {
+      padding: 24px;
+    }
+
+    .collection-selection h3 {
+      margin: 0 0 8px 0;
+      font-size: 18px;
+    }
+
+    .collection-controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .collection-field {
+      flex: 1;
+      min-width: 300px;
+    }
+
+    .collection-meta {
+      color: var(--text-secondary);
+      font-size: 12px;
+      font-style: italic;
+    }
+
+    .refresh-btn, .delete-btn {
+      opacity: 0.7;
+      transition: opacity 0.3s ease;
+    }
+
+    .refresh-btn:hover {
+      opacity: 1;
+      color: #4caf50 !important;
+    }
+
+    .delete-btn:hover {
+      opacity: 1;
+      color: #f44336 !important;
     }
 
     .upload-section, .analysis-section, .sessions-section {
       padding: 24px;
+    }
+
+    .button-group {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .docx-button {
+      background: linear-gradient(135deg, #28a745 0%, #20c997 100%) !important;
+      color: white !important;
+    }
+
+    .docx-button:disabled {
+      background: rgba(0, 0, 0, 0.12) !important;
+      color: rgba(0, 0, 0, 0.26) !important;
     }
 
     .section-description {
@@ -595,7 +730,8 @@ interface AttributionResponse {
     .control-row {
       display: flex;
       gap: 16px;
-      align-items: end;
+      align-items: flex-end;
+      flex-wrap: wrap;
     }
 
     .control-row mat-form-field {
@@ -957,6 +1093,13 @@ export class AttributionComponent implements OnInit {
   showCommentaryPrompt = false;
   showQaPrompts: { [key: number]: boolean } = {};
 
+  // Collection management
+  availableCollections: CollectionInfo[] = [];
+  selectedCollectionId = '';
+  
+  // Document generation
+  isGeneratingDocx = false;
+
   sampleQuestions = [
     'What were the top 3 contributors by total attribution?',
     'Which sectors had positive allocation effect?',
@@ -970,11 +1113,13 @@ export class AttributionComponent implements OnInit {
 
   constructor(
     private apiService: ApiService,
-    private snackBar: MatSnackBar
+    private snackBar: MatSnackBar,
+    private dialog: MatDialog
   ) {}
 
   ngOnInit() {
     this.loadActiveSessions();
+    this.loadAvailableCollections();
   }
 
   triggerFileInput() {
@@ -1252,5 +1397,153 @@ export class AttributionComponent implements OnInit {
       duration: 5000,
       panelClass: ['error-snackbar']
     });
+  }
+
+  // Collection management methods
+  async loadAvailableCollections() {
+    try {
+      const response = await this.apiService.getAttributionCollections().toPromise();
+      this.availableCollections = response.collections || [];
+    } catch (error) {
+      console.error('Failed to load collections:', error);
+    }
+  }
+
+  refreshCollections() {
+    this.loadAvailableCollections();
+  }
+
+  onCollectionSelectionChange(sessionId: string) {
+    this.selectedCollectionId = sessionId;
+    if (sessionId) {
+      // Load session data for the selected collection
+      this.loadSessionData(sessionId);
+    }
+  }
+
+  async loadSessionData(sessionId: string) {
+    try {
+      // Set the current session to the selected one
+      this.uploadResult = {
+        session_id: sessionId,
+        collection_name: `attr_session_${sessionId}`,
+        chunks_created: 0,
+        period: '',
+        asset_class: '',
+        attribution_level: '',
+        upload_timestamp: new Date().toISOString(),
+        filename: `Session ${sessionId}`
+      };
+      
+      this.showSuccess(`Selected attribution session: ${sessionId}`);
+    } catch (error) {
+      this.showError('Failed to load session data');
+    }
+  }
+
+  async deleteSelectedCollection() {
+    if (!this.selectedCollectionId) return;
+    
+    if (confirm(`Are you sure you want to delete the attribution session "${this.selectedCollectionId}"? This action cannot be undone.`)) {
+      try {
+        await this.apiService.clearAttributionSession(this.selectedCollectionId).toPromise();
+        this.showSuccess('Attribution session deleted successfully');
+        this.selectedCollectionId = '';
+        this.uploadResult = null;
+        this.commentaryResponse = null;
+        this.qaHistory = [];
+        this.loadAvailableCollections();
+      } catch (error: any) {
+        this.showError(error.error?.detail || 'Failed to delete session');
+      }
+    }
+  }
+
+  // Chat settings functionality
+  toggleSettings() {
+    const dialogRef = this.dialog.open(ChatSettingsDialogComponent, {
+      width: '700px',
+      maxWidth: '95vw',
+      maxHeight: '90vh',
+      data: { 
+        sessionId: this.uploadResult?.session_id,
+        documentType: 'performance_attribution'
+      },
+      panelClass: 'chat-settings-dialog-panel'
+    });
+
+    dialogRef.afterClosed().subscribe(result => {
+      if (result?.saved) {
+        console.log('Attribution settings updated:', result.settings);
+        this.showSuccess('Attribution settings have been updated for this session');
+      }
+    });
+  }
+
+  // Document generation functionality
+  async generateDocxFile() {
+    if (!this.commentaryResponse) {
+      this.showError('No commentary available to export');
+      return;
+    }
+
+    this.isGeneratingDocx = true;
+    
+    try {
+      // Simple client-side Word document generation
+      const content = this.commentaryResponse.response;
+      const htmlContent = this.formatCommentary(content);
+      
+      // Create a blob with HTML content that Word can open
+      const docxContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <title>Performance Attribution Commentary</title>
+          <style>
+            body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }
+            h1, h2, h3 { color: #333; }
+            .header { text-align: center; margin-bottom: 30px; }
+            .meta { color: #666; font-size: 12px; margin-bottom: 20px; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <h1>Performance Attribution Commentary</h1>
+            <div class="meta">
+              Generated on ${new Date().toLocaleDateString()}<br/>
+              Session: ${this.commentaryResponse.session_id}
+            </div>
+          </div>
+          <div class="content">
+            ${htmlContent}
+          </div>
+        </body>
+        </html>
+      `;
+      
+      const blob = new Blob([docxContent], { 
+        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' 
+      });
+      
+      // Create download link
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `Attribution_Commentary_${this.commentaryResponse.session_id}_${new Date().toISOString().split('T')[0]}.doc`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+      
+      this.showSuccess('Word document downloaded successfully');
+      
+    } catch (error) {
+      console.error('Failed to generate Word document:', error);
+      this.showError('Failed to generate Word document');
+    } finally {
+      this.isGeneratingDocx = false;
+    }
   }
 }
