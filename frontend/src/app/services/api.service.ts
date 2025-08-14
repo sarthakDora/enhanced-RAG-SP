@@ -173,4 +173,33 @@ export class ApiService {
   getDefaultPrompts(): Observable<any> {
     return this.http.get(`${this.baseUrl}/settings/prompts/defaults`);
   }
+
+  // Attribution API
+  uploadAttributionFile(formData: FormData): Observable<any> {
+    return this.http.post(`${this.baseUrl}/attribution/upload`, formData);
+  }
+
+  askAttributionQuestion(formData: FormData): Observable<any> {
+    return this.http.post(`${this.baseUrl}/attribution/question`, formData);
+  }
+
+  generateAttributionCommentary(formData: FormData): Observable<any> {
+    return this.http.post(`${this.baseUrl}/attribution/commentary`, formData);
+  }
+
+  getAttributionSessionStats(sessionId: string): Observable<any> {
+    return this.http.get(`${this.baseUrl}/attribution/session/${sessionId}/stats`);
+  }
+
+  clearAttributionSession(sessionId: string): Observable<any> {
+    return this.http.delete(`${this.baseUrl}/attribution/session/${sessionId}`);
+  }
+
+  getAttributionHealth(): Observable<any> {
+    return this.http.get(`${this.baseUrl}/attribution/health`);
+  }
+
+  getAttributionExamples(): Observable<any> {
+    return this.http.get(`${this.baseUrl}/attribution/examples`);
+  }
 }

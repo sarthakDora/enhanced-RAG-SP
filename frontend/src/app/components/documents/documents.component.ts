@@ -1,6 +1,7 @@
 import { Component, OnInit, OnDestroy, ViewChild, ElementRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { RouterModule } from '@angular/router';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatCardModule } from '@angular/material/card';
@@ -8,6 +9,8 @@ import { MatChipsModule } from '@angular/material/chips';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSelectModule } from '@angular/material/select';
 import { MatInputModule } from '@angular/material/input';
+import { MatTabsModule } from '@angular/material/tabs';
+import { MatDividerModule } from '@angular/material/divider';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { MatDialog } from '@angular/material/dialog';
 import { Subscription } from 'rxjs';
@@ -22,19 +25,41 @@ interface UploadFile {
   error?: string;
 }
 
+interface AttributionSession {
+  session_id: string;
+  collection_name: string;
+  chunks_created: number;
+  period: string;
+  asset_class: string;
+  attribution_level: string;
+  upload_timestamp: string;
+  filename: string;
+}
+
+interface AttributionResponse {
+  mode: 'qa' | 'commentary';
+  response: string;
+  session_id: string;
+  question?: string;
+  context_used?: number;
+}
+
 @Component({
   selector: 'app-documents',
   standalone: true,
   imports: [
     CommonModule,
     FormsModule,
+    RouterModule,
     MatButtonModule,
     MatIconModule,
     MatCardModule,
     MatChipsModule,
     MatProgressBarModule,
     MatSelectModule,
-    MatInputModule
+    MatInputModule,
+    MatTabsModule,
+    MatDividerModule
   ],
   template: `
     <div class="documents-container fade-in">
@@ -84,6 +109,24 @@ interface UploadFile {
         <div class="upload-config glass-card" *ngIf="selectedFiles.length > 0">
           <h4>Upload Configuration</h4>
           
+          <!-- Attribution File Detection -->
+          <div class="attribution-detection" *ngIf="hasAttributionFiles">
+            <div class="detection-notice">
+              <mat-icon>info</mat-icon>
+              <div>
+                <strong>Attribution Files Detected</strong>
+                <p>Excel files detected that may contain performance attribution data. 
+                   Consider using the <a routerLink="/attribution">Attribution Analysis</a> feature for specialized processing.</p>
+              </div>
+              <button mat-button 
+                      class="glass-button"
+                      routerLink="/attribution">
+                <mat-icon>account_balance</mat-icon>
+                Go to Attribution
+              </button>
+            </div>
+          </div>
+          
           <div class="config-row">
             <mat-form-field appearance="outline">
               <mat-label>Document Type</mat-label>
@@ -107,7 +150,7 @@ interface UploadFile {
                     [disabled]="isUploading"
                     (click)="uploadFiles()">
               <mat-icon>upload</mat-icon>
-              Upload {{ selectedFiles.length }} File(s)
+              {{ isPerformanceAttribution ? 'Process Attribution File' : 'Upload' }} {{ selectedFiles.length }} File(s)
             </button>
             
             <button mat-button 
@@ -116,6 +159,22 @@ interface UploadFile {
               <mat-icon>clear</mat-icon>
               Clear
             </button>
+          </div>
+        </div>
+
+        <!-- Attribution Configuration (when Performance Attribution is selected) -->
+        <div class="attribution-config glass-card" *ngIf="isPerformanceAttribution && selectedFiles.length > 0">
+          <h4>Attribution Configuration</h4>
+          <p class="section-description">
+            Configure performance attribution processing for Excel files with sector or country-level data.
+          </p>
+          
+          <div class="config-row">
+            <mat-form-field appearance="outline">
+              <mat-label>Session ID (optional)</mat-label>
+              <input matInput [(ngModel)]="attributionSessionId" 
+                     placeholder="Auto-generated if empty">
+            </mat-form-field>
           </div>
         </div>
 
@@ -147,6 +206,170 @@ interface UploadFile {
               {{ uploadFile.error }}
             </div>
           </div>
+        </div>
+
+        <!-- Attribution Results (when Performance Attribution is processed) -->
+        <div class="attribution-results glass-card" *ngIf="attributionResult">
+          <h4>✅ Attribution File Processed Successfully</h4>
+          <div class="result-grid">
+            <div class="result-item">
+              <strong>Session ID:</strong> {{ attributionResult?.session_id }}
+            </div>
+            <div class="result-item">
+              <strong>Asset Class:</strong> {{ attributionResult?.asset_class }}
+            </div>
+            <div class="result-item">
+              <strong>Attribution Level:</strong> {{ attributionResult?.attribution_level }}
+            </div>
+            <div class="result-item">
+              <strong>Period:</strong> {{ attributionResult?.period }}
+            </div>
+            <div class="result-item">
+              <strong>Chunks Created:</strong> {{ attributionResult?.chunks_created }}
+            </div>
+            <div class="result-item">
+              <strong>Collection:</strong> {{ attributionResult?.collection_name }}
+            </div>
+          </div>
+        </div>
+
+        <!-- Attribution Analysis Section -->
+        <div class="attribution-analysis" *ngIf="attributionResult">
+          <mat-tab-group>
+            <!-- Commentary Mode Tab -->
+            <mat-tab label="Commentary Mode">
+              <div class="tab-content">
+                <div class="mode-description glass-card">
+                  <mat-icon>article</mat-icon>
+                  <div>
+                    <h4>Professional Attribution Commentary</h4>
+                    <p>Generate institutional-grade performance attribution commentary using the uploaded data.</p>
+                  </div>
+                </div>
+
+                <div class="commentary-controls glass-card">
+                  <div class="control-row">
+                    <mat-form-field appearance="outline">
+                      <mat-label>Period (optional)</mat-label>
+                      <input matInput [(ngModel)]="commentaryPeriod" 
+                             placeholder="e.g., Q2 2025"
+                             [value]="attributionResult?.period">
+                    </mat-form-field>
+                    
+                    <button mat-raised-button 
+                            color="primary"
+                            class="glass-button"
+                            [disabled]="isGeneratingCommentary"
+                            (click)="generateCommentary()">
+                      <mat-icon>auto_awesome</mat-icon>
+                      Generate Commentary
+                    </button>
+                  </div>
+
+                  <div class="progress-indicator" *ngIf="isGeneratingCommentary">
+                    <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+                    <p>Generating professional attribution commentary...</p>
+                  </div>
+                </div>
+
+                <!-- Commentary Results -->
+                <div class="commentary-results glass-card" *ngIf="commentaryResponse">
+                  <div class="results-header">
+                    <h4>Attribution Commentary</h4>
+                    <div class="result-meta">
+                      <span>Mode: {{ commentaryResponse.mode }}</span>
+                      <span>Session: {{ commentaryResponse.session_id }}</span>
+                    </div>
+                  </div>
+                  
+                  <div class="commentary-content" [innerHTML]="formatCommentary(commentaryResponse.response)">
+                  </div>
+                  
+                  <div class="results-actions">
+                    <button mat-button class="glass-button" (click)="copyToClipboard(commentaryResponse.response)">
+                      <mat-icon>content_copy</mat-icon>
+                      Copy Commentary
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </mat-tab>
+
+            <!-- Q&A Mode Tab -->
+            <mat-tab label="Q&A Mode">
+              <div class="tab-content">
+                <div class="mode-description glass-card">
+                  <mat-icon>quiz</mat-icon>
+                  <div>
+                    <h4>Attribution Q&A</h4>
+                    <p>Ask specific questions about the attribution data. Answers are strictly based on the uploaded document context.</p>
+                  </div>
+                </div>
+
+                <!-- Sample Questions -->
+                <div class="sample-questions glass-card">
+                  <h4>Sample Questions</h4>
+                  <div class="questions-grid">
+                    <button mat-stroked-button 
+                            class="sample-question"
+                            *ngFor="let question of sampleQuestions"
+                            (click)="setQuestion(question)">
+                      {{ question }}
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Q&A Interface -->
+                <div class="qa-interface glass-card">
+                  <mat-form-field appearance="outline" class="question-input">
+                    <mat-label>Ask a question about the attribution data</mat-label>
+                    <textarea matInput 
+                              [(ngModel)]="currentQuestion"
+                              rows="3"
+                              placeholder="e.g., Which sectors had positive allocation effect?">
+                    </textarea>
+                  </mat-form-field>
+                  
+                  <button mat-raised-button 
+                          color="primary"
+                          class="glass-button ask-button"
+                          [disabled]="!currentQuestion.trim() || isAnswering"
+                          (click)="askQuestion()">
+                    <mat-icon>send</mat-icon>
+                    Ask Question
+                  </button>
+
+                  <div class="progress-indicator" *ngIf="isAnswering">
+                    <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+                    <p>Searching attribution data and generating answer...</p>
+                  </div>
+                </div>
+
+                <!-- Q&A History -->
+                <div class="qa-history" *ngIf="qaHistory.length > 0">
+                  <h4>Q&A History</h4>
+                  <div *ngFor="let qa of qaHistory; trackBy: trackByIndex" 
+                       class="qa-item glass-card">
+                    <div class="question">
+                      <mat-icon>help_outline</mat-icon>
+                      <strong>Q:</strong> {{ qa.question }}
+                    </div>
+                    <mat-divider></mat-divider>
+                    <div class="answer">
+                      <mat-icon>lightbulb</mat-icon>
+                      <strong>A:</strong> {{ qa.response }}
+                    </div>
+                    <div class="qa-meta">
+                      <span>Context used: {{ qa.context_used || 0 }} chunks</span>
+                      <button mat-icon-button (click)="copyToClipboard(qa.response)">
+                        <mat-icon>content_copy</mat-icon>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </mat-tab>
+          </mat-tab-group>
         </div>
       </div>
 
@@ -359,6 +582,51 @@ interface UploadFile {
     .upload-config h4 {
       margin: 0 0 16px 0;
       font-size: 16px;
+    }
+
+    .attribution-detection {
+      margin-bottom: 20px;
+    }
+
+    .detection-notice {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 16px;
+      background: rgba(33, 150, 243, 0.1);
+      border: 1px solid rgba(33, 150, 243, 0.3);
+      border-radius: 8px;
+    }
+
+    .detection-notice mat-icon {
+      color: #2196f3;
+      margin-top: 2px;
+    }
+
+    .detection-notice > div {
+      flex: 1;
+    }
+
+    .detection-notice strong {
+      display: block;
+      margin-bottom: 4px;
+      color: #2196f3;
+    }
+
+    .detection-notice p {
+      margin: 0;
+      font-size: 14px;
+      color: var(--text-secondary);
+      line-height: 1.4;
+    }
+
+    .detection-notice a {
+      color: #2196f3;
+      text-decoration: none;
+    }
+
+    .detection-notice a:hover {
+      text-decoration: underline;
     }
 
     .config-row {
@@ -639,6 +907,216 @@ interface UploadFile {
       color: var(--text-muted);
     }
 
+    /* Attribution styles */
+    .attribution-config {
+      padding: 24px;
+    }
+
+    .attribution-config h4 {
+      margin: 0 0 16px 0;
+      font-size: 16px;
+    }
+
+    .section-description {
+      color: var(--text-secondary);
+      margin: 0 0 20px 0;
+      font-size: 14px;
+    }
+
+    .attribution-results {
+      background: rgba(76, 175, 80, 0.1);
+      border: 1px solid rgba(76, 175, 80, 0.3);
+      padding: 20px;
+      border-radius: 12px;
+      margin-top: 20px;
+    }
+
+    .attribution-results h4 {
+      margin: 0 0 16px 0;
+      color: #4caf50;
+    }
+
+    .result-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+    }
+
+    .result-item {
+      font-size: 14px;
+    }
+
+    .attribution-analysis {
+      margin-top: 24px;
+    }
+
+    .tab-content {
+      padding: 24px 0;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .mode-description {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 20px;
+    }
+
+    .mode-description mat-icon {
+      font-size: 32px;
+      width: 32px;
+      height: 32px;
+      color: var(--text-primary);
+    }
+
+    .mode-description h4 {
+      margin: 0 0 8px 0;
+      font-size: 16px;
+    }
+
+    .mode-description p {
+      margin: 0;
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+
+    .commentary-controls {
+      padding: 20px;
+    }
+
+    .control-row {
+      display: flex;
+      gap: 16px;
+      align-items: end;
+    }
+
+    .control-row mat-form-field {
+      flex: 1;
+    }
+
+    .progress-indicator {
+      margin-top: 16px;
+    }
+
+    .progress-indicator p {
+      margin: 8px 0 0 0;
+      font-size: 14px;
+      color: var(--text-secondary);
+      text-align: center;
+    }
+
+    .commentary-results {
+      padding: 24px;
+    }
+
+    .results-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+
+    .results-header h4 {
+      margin: 0;
+      font-size: 18px;
+    }
+
+    .result-meta {
+      display: flex;
+      gap: 16px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .commentary-content {
+      background: var(--glass-secondary);
+      padding: 20px;
+      border-radius: 8px;
+      line-height: 1.6;
+      font-size: 14px;
+      white-space: pre-wrap;
+      margin-bottom: 16px;
+    }
+
+    .results-actions {
+      display: flex;
+      gap: 12px;
+    }
+
+    .sample-questions {
+      padding: 20px;
+    }
+
+    .sample-questions h4 {
+      margin: 0 0 16px 0;
+      font-size: 16px;
+    }
+
+    .questions-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 12px;
+    }
+
+    .sample-question {
+      text-align: left;
+      padding: 12px 16px;
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    .qa-interface {
+      padding: 20px;
+    }
+
+    .question-input {
+      width: 100%;
+      margin-bottom: 16px;
+    }
+
+    .ask-button {
+      width: 100%;
+    }
+
+    .qa-history h4 {
+      margin: 0 0 16px 0;
+      padding: 0 8px;
+      font-size: 16px;
+    }
+
+    .qa-item {
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+
+    .question, .answer {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .question mat-icon {
+      color: #2196f3;
+      margin-top: 2px;
+    }
+
+    .answer mat-icon {
+      color: #4caf50;
+      margin-top: 2px;
+    }
+
+    .qa-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-top: 12px;
+    }
+
     /* Responsive Design */
     @media (max-width: 768px) {
       .documents-header {
@@ -648,6 +1126,15 @@ interface UploadFile {
       }
 
       .config-row {
+        grid-template-columns: 1fr;
+      }
+
+      .control-row {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      .questions-grid {
         grid-template-columns: 1fr;
       }
 
@@ -676,6 +1163,25 @@ export class DocumentsComponent implements OnInit, OnDestroy {
   tags = '';
   isDragOver = false;
   isUploading = false;
+  hasAttributionFiles = false;
+  
+  // Attribution-specific properties
+  attributionResult: AttributionSession | null = null;
+  attributionSessionId = '';
+  commentaryPeriod = '';
+  isGeneratingCommentary = false;
+  commentaryResponse: AttributionResponse | null = null;
+  currentQuestion = '';
+  isAnswering = false;
+  qaHistory: AttributionResponse[] = [];
+  sampleQuestions = [
+    'What were the top 3 contributors by total attribution?',
+    'Which sectors had positive allocation effect?',
+    'Which countries had negative FX but positive selection?',
+    'What was the total FX impact?',
+    'Show me the rankings by total attribution',
+    'What was the portfolio total return vs benchmark?'
+  ];
 
   documentTypes = [
     { value: DocumentType.FINANCIAL_REPORT, label: 'Financial Report' },
@@ -707,6 +1213,10 @@ export class DocumentsComponent implements OnInit, OnDestroy {
 
   ngOnDestroy() {
     this.subscriptions.forEach(sub => sub.unsubscribe());
+  }
+
+  get isPerformanceAttribution(): boolean {
+    return this.selectedDocumentType === DocumentType.PERFORMANCE_ATTRIBUTION;
   }
 
   triggerFileInput() {
@@ -743,6 +1253,9 @@ export class DocumentsComponent implements OnInit, OnDestroy {
     const validFiles = files.filter(file => this.isValidFile(file));
     this.selectedFiles = [...this.selectedFiles, ...validFiles];
     
+    // Check for attribution files
+    this.checkForAttributionFiles();
+    
     if (validFiles.length !== files.length) {
       this.showError('Some files were rejected. Only PDF, DOCX, TXT, XLSX, and XLS files under 1GB are allowed.');
     }
@@ -764,12 +1277,34 @@ export class DocumentsComponent implements OnInit, OnDestroy {
     this.selectedFiles = [];
     this.uploadFilesList = [];
     this.tags = '';
+    this.hasAttributionFiles = false;
+    this.attributionResult = null;
+    this.attributionSessionId = '';
+    this.commentaryPeriod = '';
+    this.commentaryResponse = null;
+    this.currentQuestion = '';
+    this.qaHistory = [];
+  }
+
+  private checkForAttributionFiles() {
+    this.hasAttributionFiles = this.selectedFiles.some(file => 
+      file.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || // .xlsx
+      file.type === 'application/vnd.ms-excel' // .xls
+    );
   }
 
   async uploadFiles() {
     if (this.selectedFiles.length === 0) return;
 
     this.isUploading = true;
+    
+    // Handle Performance Attribution processing
+    if (this.isPerformanceAttribution) {
+      await this.processAttributionFiles();
+      return;
+    }
+
+    // Handle regular document upload
     this.uploadFilesList = this.selectedFiles.map(file => ({
       file,
       progress: 0,
@@ -946,5 +1481,130 @@ export class DocumentsComponent implements OnInit, OnDestroy {
       duration: 5000,
       panelClass: ['error-snackbar']
     });
+  }
+
+  // Attribution-specific methods
+  async processAttributionFiles() {
+    if (this.selectedFiles.length === 0) return;
+
+    this.isUploading = true;
+    
+    try {
+      // Process only the first Excel file for attribution
+      const excelFile = this.selectedFiles.find(file => 
+        file.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || 
+        file.type === 'application/vnd.ms-excel'
+      );
+      
+      if (!excelFile) {
+        this.showError('No Excel files found for attribution processing');
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('file', excelFile);
+      if (this.attributionSessionId.trim()) {
+        formData.append('session_id', this.attributionSessionId.trim());
+      }
+
+      const response = await this.apiService.uploadAttributionFile(formData).toPromise();
+      
+      this.attributionResult = {
+        ...response,
+        filename: excelFile.name,
+        upload_timestamp: new Date().toISOString()
+      };
+
+      // Set commentary period from upload result
+      this.commentaryPeriod = this.attributionResult?.period || '';
+
+      this.showSuccess('Attribution file processed successfully!');
+      
+      // Clear file selection after successful processing
+      this.selectedFiles = [];
+
+    } catch (error: any) {
+      this.showError(error.error?.detail || 'Failed to process attribution file');
+    } finally {
+      this.isUploading = false;
+    }
+  }
+
+  async generateCommentary() {
+    if (!this.attributionResult) return;
+
+    this.isGeneratingCommentary = true;
+    
+    try {
+      const formData = new FormData();
+      formData.append('session_id', this.attributionResult.session_id);
+      if (this.commentaryPeriod.trim()) {
+        formData.append('period', this.commentaryPeriod.trim());
+      }
+
+      const response = await this.apiService.generateAttributionCommentary(formData).toPromise();
+      this.commentaryResponse = response;
+
+    } catch (error: any) {
+      this.showError(error.error?.detail || 'Failed to generate commentary');
+    } finally {
+      this.isGeneratingCommentary = false;
+    }
+  }
+
+  setQuestion(question: string) {
+    this.currentQuestion = question;
+  }
+
+  async askQuestion() {
+    if (!this.attributionResult || !this.currentQuestion.trim()) return;
+
+    this.isAnswering = true;
+    
+    try {
+      const formData = new FormData();
+      formData.append('session_id', this.attributionResult.session_id);
+      formData.append('question', this.currentQuestion.trim());
+      formData.append('mode', 'qa');
+
+      const response = await this.apiService.askAttributionQuestion(formData).toPromise();
+      
+      // Add to history
+      this.qaHistory.unshift({
+        ...response,
+        question: this.currentQuestion.trim()
+      });
+
+      // Clear current question
+      this.currentQuestion = '';
+
+    } catch (error: any) {
+      this.showError(error.error?.detail || 'Failed to answer question');
+    } finally {
+      this.isAnswering = false;
+    }
+  }
+
+  formatCommentary(commentary: string): string {
+    // Convert markdown-like formatting to HTML
+    return commentary
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.*?)\*/g, '<em>$1</em>')
+      .replace(/\n/g, '<br>')
+      .replace(/^### (.*$)/gm, '<h3>$1</h3>')
+      .replace(/^## (.*$)/gm, '<h2>$1</h2>')
+      .replace(/^# (.*$)/gm, '<h1>$1</h1>');
+  }
+
+  copyToClipboard(text: string) {
+    navigator.clipboard.writeText(text).then(() => {
+      this.showSuccess('Copied to clipboard');
+    }).catch(() => {
+      this.showError('Failed to copy to clipboard');
+    });
+  }
+
+  trackByIndex(index: number, item: any): number {
+    return index;
   }
 }
