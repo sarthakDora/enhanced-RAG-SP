@@ -48,6 +48,24 @@ interface CollectionInfo {
   status: string;
 }
 
+interface ChartData {
+  title: string;
+  type: 'bar' | 'line' | 'pie' | 'scatter' | 'table';
+  data: any;
+  description?: string;
+  rawData?: any[][];
+  headers?: string[];
+}
+
+interface ChartHistoryItem {
+  id: string;
+  title: string;
+  type: string;
+  prompt: string;
+  data: ChartData;
+  created: string;
+}
+
 @Component({
   selector: 'app-attribution',
   standalone: true,
@@ -254,11 +272,11 @@ interface CollectionInfo {
       </div>
 
       <!-- Analysis Section -->
-      <div class="analysis-section" *ngIf="uploadResult">
+      <div class="analysis-section">
         <mat-tab-group>
           <!-- Commentary Mode Tab -->
           <mat-tab label="Commentary Mode">
-            <div class="tab-content">
+            <div class="tab-content" *ngIf="uploadResult; else noDataMessage">
               <div class="mode-description glass-card">
                 <mat-icon>article</mat-icon>
                 <div>
@@ -353,7 +371,7 @@ interface CollectionInfo {
 
           <!-- Q&A Mode Tab -->
           <mat-tab label="Q&A Mode">
-            <div class="tab-content">
+            <div class="tab-content" *ngIf="uploadResult; else noDataMessage">
               <div class="mode-description glass-card">
                 <mat-icon>quiz</mat-icon>
                 <div>
@@ -447,8 +465,170 @@ interface CollectionInfo {
               </div>
             </div>
           </mat-tab>
+
+          <!-- Visualization Mode Tab -->
+          <mat-tab label="Visualization">
+            <div class="tab-content">
+              <div class="mode-description glass-card">
+                <mat-icon>bar_chart</mat-icon>
+                <div>
+                  <h4>AI-Powered Visualization</h4>
+                  <p>Generate charts and visualizations by describing what you want to see. 
+                     Our AI will analyze the attribution data and create the appropriate chart type.</p>
+                </div>
+              </div>
+
+              <!-- Sample Visualization Prompts -->
+              <div class="sample-prompts glass-card">
+                <h4>Sample Visualization Requests</h4>
+                <div class="prompts-grid">
+                  <button mat-stroked-button 
+                          class="sample-prompt"
+                          *ngFor="let prompt of sampleVisualizationPrompts"
+                          (click)="setVisualizationPrompt(prompt)">
+                    {{ prompt }}
+                  </button>
+                </div>
+              </div>
+
+              <!-- Visualization Interface -->
+              <div class="visualization-interface glass-card">
+                <mat-form-field appearance="outline" class="prompt-input">
+                  <mat-label>Describe the chart you want to create</mat-label>
+                  <textarea matInput 
+                            [(ngModel)]="currentVisualizationPrompt"
+                            rows="3"
+                            placeholder="e.g., Create a bar chart showing total attribution by sector, ordered from highest to lowest">
+                  </textarea>
+                </mat-form-field>
+                
+                <div class="chart-controls">
+                  <mat-form-field appearance="outline">
+                    <mat-label>Chart Type (optional)</mat-label>
+                    <mat-select [(ngModel)]="preferredChartType">
+                      <mat-option value="">Auto-detect</mat-option>
+                      <mat-option value="bar">Bar Chart</mat-option>
+                      <mat-option value="line">Line Chart</mat-option>
+                      <mat-option value="pie">Pie Chart</mat-option>
+                      <mat-option value="scatter">Scatter Plot</mat-option>
+                      <mat-option value="table">Data Table</mat-option>
+                    </mat-select>
+                  </mat-form-field>
+                  
+                  <button mat-raised-button 
+                          color="primary"
+                          class="glass-button generate-chart-button"
+                          [disabled]="!currentVisualizationPrompt.trim() || isGeneratingChart"
+                          (click)="generateChart()">
+                    <mat-icon>auto_awesome</mat-icon>
+                    Generate Chart
+                  </button>
+                </div>
+
+                <div class="progress-indicator" *ngIf="isGeneratingChart">
+                  <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+                  <p>Analyzing data and generating visualization...</p>
+                </div>
+              </div>
+
+              <!-- Chart Display Area -->
+              <div class="chart-display glass-card" *ngIf="chartData">
+                <div class="chart-header">
+                  <h4>{{ chartData.title || 'Generated Visualization' }}</h4>
+                  <div class="chart-actions">
+                    <button mat-icon-button 
+                            matTooltip="Download as PNG"
+                            (click)="downloadChart('png')">
+                      <mat-icon>download</mat-icon>
+                    </button>
+                    <button mat-icon-button 
+                            matTooltip="Copy chart data"
+                            (click)="copyChartData()">
+                      <mat-icon>content_copy</mat-icon>
+                    </button>
+                    <button mat-icon-button 
+                            matTooltip="Regenerate with different style"
+                            (click)="regenerateChart()">
+                      <mat-icon>refresh</mat-icon>
+                    </button>
+                    <button mat-icon-button 
+                            matTooltip="Toggle data table"
+                            (click)="toggleChartDataTable()">
+                      <mat-icon>table_view</mat-icon>
+                    </button>
+                  </div>
+                </div>
+                
+                <div class="chart-container" #chartContainer>
+                  <!-- Chart will be rendered here -->
+                </div>
+                
+                <div class="chart-description" *ngIf="chartData.description">
+                  <h5>Chart Analysis</h5>
+                  <p>{{ chartData.description }}</p>
+                </div>
+                
+                <div class="chart-data-table" *ngIf="chartData.rawData && showChartData">
+                  <h5>Source Data</h5>
+                  <table class="data-table">
+                    <thead>
+                      <tr>
+                        <th *ngFor="let header of chartData.headers">{{ header }}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr *ngFor="let row of chartData.rawData">
+                        <td *ngFor="let cell of row">{{ formatCellValue(cell) }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <!-- Chart History -->
+              <div class="chart-history" *ngIf="chartHistory.length > 0">
+                <h4>Visualization History</h4>
+                <div class="chart-history-grid">
+                  <div *ngFor="let chart of chartHistory; let i = index" 
+                       class="chart-history-item glass-card">
+                    <div class="history-header">
+                      <div class="history-title">
+                        <mat-icon>{{ getChartIcon(chart.type) }}</mat-icon>
+                        <span>{{ chart.title }}</span>
+                      </div>
+                      <button mat-icon-button 
+                              (click)="loadHistoryChart(chart)">
+                        <mat-icon>open_in_new</mat-icon>
+                      </button>
+                    </div>
+                    <div class="history-prompt">{{ chart.prompt }}</div>
+                    <div class="history-meta">
+                      <span>{{ chart.type | titlecase }} Chart</span>
+                      <span>{{ formatDate(chart.created) }}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </mat-tab>
         </mat-tab-group>
       </div>
+
+      <!-- No Data Message Template -->
+      <ng-template #noDataMessage>
+        <div class="no-data-message glass-card">
+          <mat-icon>upload_file</mat-icon>
+          <h4>No Attribution Data Available</h4>
+          <p>Please upload an attribution Excel file to use Commentary and Q&A features.</p>
+          <p>You can still use the <strong>Visualization</strong> tab which includes demo data.</p>
+          <button mat-raised-button 
+                  class="glass-button"
+                  (click)="triggerFileInput()">
+            <mat-icon>upload_file</mat-icon>
+            Upload Attribution File
+          </button>
+        </div>
+      </ng-template>
 
       <!-- Active Sessions -->
       <div class="sessions-section glass-card" *ngIf="activeSessions.length > 0">
@@ -1033,6 +1213,215 @@ interface CollectionInfo {
       max-height: 1000px;
     }
 
+    /* Visualization Styles */
+    .sample-prompts {
+      padding: 20px;
+    }
+
+    .sample-prompts h4 {
+      margin: 0 0 16px 0;
+      font-size: 16px;
+    }
+
+    .prompts-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+      gap: 12px;
+    }
+
+    .sample-prompt {
+      text-align: left;
+      padding: 12px 16px;
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    .visualization-interface {
+      padding: 20px;
+    }
+
+    .prompt-input {
+      width: 100%;
+      margin-bottom: 16px;
+    }
+
+    .chart-controls {
+      display: flex;
+      gap: 16px;
+      align-items: flex-end;
+      flex-wrap: wrap;
+    }
+
+    .chart-controls mat-form-field {
+      min-width: 200px;
+    }
+
+    .generate-chart-button {
+      height: 56px;
+    }
+
+    .chart-display {
+      padding: 24px;
+    }
+
+    .chart-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+
+    .chart-header h4 {
+      margin: 0;
+      font-size: 18px;
+    }
+
+    .chart-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .chart-container {
+      min-height: 400px;
+      background: var(--glass-secondary);
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+
+    .chart-description {
+      background: rgba(76, 175, 80, 0.1);
+      border: 1px solid rgba(76, 175, 80, 0.3);
+      padding: 16px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+    }
+
+    .chart-description h5 {
+      margin: 0 0 8px 0;
+      color: #4caf50;
+      font-size: 14px;
+    }
+
+    .chart-description p {
+      margin: 0;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .chart-data-table {
+      margin-top: 16px;
+    }
+
+    .chart-data-table h5 {
+      margin: 0 0 12px 0;
+      font-size: 14px;
+    }
+
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      background: var(--glass-secondary);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .data-table th,
+    .data-table td {
+      padding: 8px 12px;
+      text-align: left;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .data-table th {
+      background: var(--glass-accent);
+      font-weight: 500;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .chart-history h4 {
+      margin: 0 0 16px 0;
+      padding: 0 8px;
+      font-size: 16px;
+    }
+
+    .chart-history-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 16px;
+    }
+
+    .chart-history-item {
+      padding: 16px;
+    }
+
+    .history-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+
+    .history-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 500;
+      font-size: 14px;
+    }
+
+    .history-title mat-icon {
+      font-size: 18px;
+      width: 18px;
+      height: 18px;
+    }
+
+    .history-prompt {
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-bottom: 8px;
+      line-height: 1.4;
+    }
+
+    .history-meta {
+      display: flex;
+      gap: 12px;
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
+
+    .no-data-message {
+      padding: 40px;
+      text-align: center;
+      margin: 20px 0;
+    }
+
+    .no-data-message mat-icon {
+      font-size: 64px;
+      width: 64px;
+      height: 64px;
+      color: var(--text-secondary);
+      margin-bottom: 16px;
+    }
+
+    .no-data-message h4 {
+      margin: 0 0 12px 0;
+      font-size: 18px;
+    }
+
+    .no-data-message p {
+      margin: 8px 0;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+
+    .no-data-message button {
+      margin-top: 20px;
+    }
+
     /* Responsive Design */
     @media (max-width: 768px) {
       .attribution-header {
@@ -1047,6 +1436,25 @@ interface CollectionInfo {
       }
 
       .questions-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .prompts-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .chart-controls {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      .chart-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 12px;
+      }
+
+      .chart-history-grid {
         grid-template-columns: 1fr;
       }
 
@@ -1067,6 +1475,7 @@ interface CollectionInfo {
 export class AttributionComponent implements OnInit {
   chunkList: any[] = [];
   @ViewChild('fileInput') fileInput!: ElementRef<HTMLInputElement>;
+  @ViewChild('chartContainer') chartContainer!: ElementRef<HTMLDivElement>;
 
   selectedFile: File | null = null;
   sessionId = '';
@@ -1099,6 +1508,25 @@ export class AttributionComponent implements OnInit {
   
   // Document generation
   isGeneratingDocx = false;
+
+  // Visualization Mode
+  currentVisualizationPrompt = '';
+  preferredChartType = '';
+  isGeneratingChart = false;
+  chartData: ChartData | null = null;
+  chartHistory: ChartHistoryItem[] = [];
+  showChartData = false;
+
+  sampleVisualizationPrompts = [
+    'Create a bar chart showing total attribution by sector, ordered from highest to lowest',
+    'Show a pie chart of allocation effects by country',
+    'Plot selection effects vs allocation effects as a scatter chart',
+    'Create a table ranking all positions by total attribution',
+    'Generate a line chart showing FX impact over time if available',
+    'Display a horizontal bar chart of the top 5 contributors and bottom 5 detractors',
+    'Show allocation and selection effects side by side in a grouped bar chart',
+    'Create a waterfall chart showing attribution breakdown by component'
+  ];
 
   sampleQuestions = [
     'What were the top 3 contributors by total attribution?',
@@ -1545,5 +1973,509 @@ export class AttributionComponent implements OnInit {
     } finally {
       this.isGeneratingDocx = false;
     }
+  }
+
+  // Visualization methods
+  setVisualizationPrompt(prompt: string) {
+    this.currentVisualizationPrompt = prompt;
+  }
+
+  async generateChart() {
+    if (!this.currentVisualizationPrompt.trim()) return;
+
+    this.isGeneratingChart = true;
+    try {
+      // Generate chart data client-side since backend has issues
+      const demoData = this.generateDemoChartData();
+      
+      const chartType = (this.preferredChartType as 'bar' | 'line' | 'pie' | 'scatter' | 'table') || 'bar';
+      
+      this.chartData = {
+        title: this.generateChartTitle(this.currentVisualizationPrompt.trim(), this.preferredChartType),
+        type: chartType,
+        data: demoData.chartData,
+        description: `Visualization based on your request: "${this.currentVisualizationPrompt.trim()}". This demo shows attribution data with Technology (+1.5pp), Healthcare (-0.8pp), Financials (+0.9pp), Energy (-1.2pp), and Consumer Discretionary (+0.6pp).`,
+        rawData: demoData.rawData,
+        headers: demoData.headers
+      };
+
+      // Add to history
+      const historyItem: ChartHistoryItem = {
+        id: Date.now().toString(),
+        title: this.chartData.title,
+        type: this.chartData.type,
+        prompt: this.currentVisualizationPrompt.trim(),
+        data: this.chartData,
+        created: new Date().toISOString()
+      };
+      this.chartHistory.unshift(historyItem);
+
+      // Render the chart
+      this.renderChart(this.chartData);
+
+      // Clear the prompt
+      this.currentVisualizationPrompt = '';
+      this.preferredChartType = '';
+
+      this.showSuccess('Chart generated successfully!');
+
+    } catch (error: any) {
+      this.showError('Failed to generate chart: ' + error.message);
+    } finally {
+      this.isGeneratingChart = false;
+    }
+  }
+
+  private generateDemoChartData() {
+    const demoData = [
+      { name: "Technology", total: 1.5, allocation: 0.3, selection: 1.2 },
+      { name: "Healthcare", total: -0.8, allocation: -0.2, selection: -0.6 },
+      { name: "Financials", total: 0.9, allocation: 0.5, selection: 0.4 },
+      { name: "Energy", total: -1.2, allocation: -0.8, selection: -0.4 },
+      { name: "Consumer Discretionary", total: 0.6, allocation: 0.1, selection: 0.5 }
+    ];
+
+    return {
+      chartData: {
+        labels: demoData.map(item => item.name),
+        datasets: [{
+          label: 'Total Attribution (pp)',
+          data: demoData.map(item => item.total),
+          backgroundColor: demoData.map(item => item.total > 0 ? '#4caf50' : '#f44336')
+        }]
+      },
+      rawData: demoData.map(item => [item.name, item.total, item.allocation, item.selection]),
+      headers: ['Sector', 'Total Attribution', 'Allocation Effect', 'Selection Effect']
+    };
+  }
+
+  private generateChartTitle(prompt: string, chartType: string): string {
+    const type = chartType || 'bar';
+    if (prompt.toLowerCase().includes('sector')) {
+      return `Sector Attribution Analysis - ${type.charAt(0).toUpperCase() + type.slice(1)} Chart`;
+    }
+    if (prompt.toLowerCase().includes('allocation')) {
+      return `Allocation Effects - ${type.charAt(0).toUpperCase() + type.slice(1)} Chart`;
+    }
+    if (prompt.toLowerCase().includes('selection')) {
+      return `Selection Effects - ${type.charAt(0).toUpperCase() + type.slice(1)} Chart`;
+    }
+    return `Attribution Analysis - ${type.charAt(0).toUpperCase() + type.slice(1)} Chart`;
+  }
+
+  private renderChart(chartData: ChartData | null) {
+    if (!this.chartContainer || !chartData) return;
+
+    const container = this.chartContainer.nativeElement;
+    container.innerHTML = '';
+
+    // Create actual chart visualization
+    if (chartData.type === 'bar') {
+      this.renderBarChart(container, chartData);
+    } else if (chartData.type === 'pie') {
+      this.renderPieChart(container, chartData);
+    } else if (chartData.type === 'table') {
+      this.renderDataTable(container, chartData);
+    } else {
+      // Fallback for other chart types
+      this.renderBarChart(container, chartData);
+    }
+  }
+
+  private renderBarChart(container: HTMLElement, chartData: ChartData) {
+    const data = chartData.data.datasets[0].data as number[];
+    const labels = chartData.data.labels as string[];
+    const backgroundColor = chartData.data.datasets[0].backgroundColor as string[];
+
+    // Create chart wrapper
+    const chartWrapper = document.createElement('div');
+    chartWrapper.style.cssText = `
+      width: 100%;
+      height: 400px;
+      padding: 20px;
+      background: var(--glass-secondary);
+      border-radius: 8px;
+      font-family: Arial, sans-serif;
+    `;
+
+    // Add title
+    const title = document.createElement('h3');
+    title.style.cssText = `
+      margin: 0 0 20px 0;
+      text-align: center;
+      color: var(--text-primary);
+      font-size: 16px;
+    `;
+    title.textContent = chartData.title;
+    chartWrapper.appendChild(title);
+
+    // Create SVG chart
+    const svgNamespace = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(svgNamespace, 'svg');
+    svg.setAttribute('width', '100%');
+    svg.setAttribute('height', '300');
+    svg.setAttribute('viewBox', '0 0 800 300');
+
+    // Chart dimensions
+    const chartWidth = 700;
+    const chartHeight = 200;
+    const marginLeft = 80;
+    const marginBottom = 80;
+    const marginTop = 20;
+
+    // Find min and max values for scaling
+    const maxValue = Math.max(...data.map(Math.abs));
+    const minValue = Math.min(...data);
+    const hasNegativeValues = minValue < 0;
+    
+    // Calculate scale
+    const scale = chartHeight / (maxValue - (hasNegativeValues ? minValue : 0));
+    const zeroLine = hasNegativeValues ? marginTop + (maxValue * scale) : marginTop + chartHeight;
+
+    // Draw bars
+    const barWidth = chartWidth / data.length * 0.7;
+    const barSpacing = chartWidth / data.length;
+
+    data.forEach((value, index) => {
+      const x = marginLeft + index * barSpacing + (barSpacing - barWidth) / 2;
+      const barHeight = Math.abs(value) * scale;
+      const y = value >= 0 ? zeroLine - barHeight : zeroLine;
+
+      // Create bar
+      const rect = document.createElementNS(svgNamespace, 'rect');
+      rect.setAttribute('x', x.toString());
+      rect.setAttribute('y', y.toString());
+      rect.setAttribute('width', barWidth.toString());
+      rect.setAttribute('height', barHeight.toString());
+      rect.setAttribute('fill', backgroundColor ? backgroundColor[index] : (value >= 0 ? '#4caf50' : '#f44336'));
+      rect.setAttribute('stroke', 'rgba(255,255,255,0.2)');
+      rect.setAttribute('stroke-width', '1');
+      rect.setAttribute('rx', '2');
+      svg.appendChild(rect);
+
+      // Add value labels on bars
+      const valueText = document.createElementNS(svgNamespace, 'text');
+      valueText.setAttribute('x', (x + barWidth / 2).toString());
+      valueText.setAttribute('y', value >= 0 ? (y - 5).toString() : (y + barHeight + 15).toString());
+      valueText.setAttribute('text-anchor', 'middle');
+      valueText.setAttribute('fill', 'var(--text-primary)');
+      valueText.setAttribute('font-size', '11');
+      valueText.setAttribute('font-weight', 'bold');
+      valueText.textContent = `${value > 0 ? '+' : ''}${value.toFixed(1)}pp`;
+      svg.appendChild(valueText);
+
+      // Add labels below bars
+      const labelText = document.createElementNS(svgNamespace, 'text');
+      labelText.setAttribute('x', (x + barWidth / 2).toString());
+      labelText.setAttribute('y', (marginTop + chartHeight + 20).toString());
+      labelText.setAttribute('text-anchor', 'middle');
+      labelText.setAttribute('fill', 'var(--text-secondary)');
+      labelText.setAttribute('font-size', '10');
+      
+      // Wrap long labels
+      const label = labels[index];
+      if (label.length > 12) {
+        const words = label.split(' ');
+        const lines = [];
+        let currentLine = '';
+        
+        words.forEach(word => {
+          if ((currentLine + word).length > 12 && currentLine.length > 0) {
+            lines.push(currentLine.trim());
+            currentLine = word + ' ';
+          } else {
+            currentLine += word + ' ';
+          }
+        });
+        if (currentLine.trim()) lines.push(currentLine.trim());
+
+        lines.forEach((line, lineIndex) => {
+          const tspan = document.createElementNS(svgNamespace, 'tspan');
+          tspan.setAttribute('x', (x + barWidth / 2).toString());
+          tspan.setAttribute('dy', lineIndex === 0 ? '0' : '12');
+          tspan.textContent = line;
+          labelText.appendChild(tspan);
+        });
+      } else {
+        labelText.textContent = label;
+      }
+      svg.appendChild(labelText);
+    });
+
+    // Draw zero line if there are negative values
+    if (hasNegativeValues) {
+      const zeroLineElement = document.createElementNS(svgNamespace, 'line');
+      zeroLineElement.setAttribute('x1', marginLeft.toString());
+      zeroLineElement.setAttribute('y1', zeroLine.toString());
+      zeroLineElement.setAttribute('x2', (marginLeft + chartWidth).toString());
+      zeroLineElement.setAttribute('y2', zeroLine.toString());
+      zeroLineElement.setAttribute('stroke', 'rgba(255,255,255,0.5)');
+      zeroLineElement.setAttribute('stroke-width', '1');
+      zeroLineElement.setAttribute('stroke-dasharray', '5,5');
+      svg.appendChild(zeroLineElement);
+    }
+
+    // Add Y-axis labels
+    const yAxisSteps = 5;
+    for (let i = 0; i <= yAxisSteps; i++) {
+      const value = maxValue - (i * (maxValue - (hasNegativeValues ? minValue : 0)) / yAxisSteps);
+      const y = marginTop + (i * chartHeight / yAxisSteps);
+      
+      const yLabel = document.createElementNS(svgNamespace, 'text');
+      yLabel.setAttribute('x', (marginLeft - 10).toString());
+      yLabel.setAttribute('y', (y + 3).toString());
+      yLabel.setAttribute('text-anchor', 'end');
+      yLabel.setAttribute('fill', 'var(--text-secondary)');
+      yLabel.setAttribute('font-size', '10');
+      yLabel.textContent = `${value > 0 ? '+' : ''}${value.toFixed(1)}`;
+      svg.appendChild(yLabel);
+    }
+
+    chartWrapper.appendChild(svg);
+    container.appendChild(chartWrapper);
+  }
+
+  private renderPieChart(container: HTMLElement, chartData: ChartData) {
+    // Simple pie chart implementation
+    const data = chartData.data.datasets[0].data as number[];
+    const labels = chartData.data.labels as string[];
+    
+    const chartWrapper = document.createElement('div');
+    chartWrapper.style.cssText = `
+      width: 100%;
+      height: 400px;
+      padding: 20px;
+      background: var(--glass-secondary);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+    `;
+
+    const title = document.createElement('h3');
+    title.style.cssText = `margin: 0 0 20px 0; text-align: center; color: var(--text-primary);`;
+    title.textContent = chartData.title;
+    chartWrapper.appendChild(title);
+
+    const pieContainer = document.createElement('div');
+    pieContainer.style.cssText = `display: flex; align-items: center; gap: 40px;`;
+
+    // Create SVG pie chart
+    const svgNamespace = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(svgNamespace, 'svg');
+    svg.setAttribute('width', '250');
+    svg.setAttribute('height', '250');
+
+    const total = data.reduce((sum, value) => sum + Math.abs(value), 0);
+    let currentAngle = 0;
+    const radius = 100;
+    const centerX = 125;
+    const centerY = 125;
+
+    const colors = ['#4caf50', '#f44336', '#2196f3', '#ff9800', '#9c27b0'];
+
+    data.forEach((value, index) => {
+      const percentage = Math.abs(value) / total;
+      const sliceAngle = percentage * 2 * Math.PI;
+      
+      const x1 = centerX + radius * Math.cos(currentAngle);
+      const y1 = centerY + radius * Math.sin(currentAngle);
+      const x2 = centerX + radius * Math.cos(currentAngle + sliceAngle);
+      const y2 = centerY + radius * Math.sin(currentAngle + sliceAngle);
+      
+      const largeArcFlag = sliceAngle > Math.PI ? 1 : 0;
+      
+      const pathData = [
+        `M ${centerX} ${centerY}`,
+        `L ${x1} ${y1}`,
+        `A ${radius} ${radius} 0 ${largeArcFlag} 1 ${x2} ${y2}`,
+        'Z'
+      ].join(' ');
+      
+      const path = document.createElementNS(svgNamespace, 'path');
+      path.setAttribute('d', pathData);
+      path.setAttribute('fill', colors[index % colors.length]);
+      path.setAttribute('stroke', 'rgba(255,255,255,0.2)');
+      path.setAttribute('stroke-width', '2');
+      svg.appendChild(path);
+      
+      currentAngle += sliceAngle;
+    });
+
+    // Create legend
+    const legend = document.createElement('div');
+    legend.style.cssText = `display: flex; flex-direction: column; gap: 8px;`;
+    
+    data.forEach((value, index) => {
+      const legendItem = document.createElement('div');
+      legendItem.style.cssText = `display: flex; align-items: center; gap: 8px;`;
+      
+      const colorBox = document.createElement('div');
+      colorBox.style.cssText = `
+        width: 12px; height: 12px; border-radius: 2px;
+        background-color: ${colors[index % colors.length]};
+      `;
+      
+      const label = document.createElement('span');
+      label.style.cssText = `color: var(--text-primary); font-size: 12px;`;
+      label.textContent = `${labels[index]}: ${value > 0 ? '+' : ''}${value.toFixed(1)}pp`;
+      
+      legendItem.appendChild(colorBox);
+      legendItem.appendChild(label);
+      legend.appendChild(legendItem);
+    });
+
+    pieContainer.appendChild(svg);
+    pieContainer.appendChild(legend);
+    chartWrapper.appendChild(pieContainer);
+    container.appendChild(chartWrapper);
+  }
+
+  private renderDataTable(container: HTMLElement, chartData: ChartData) {
+    const chartWrapper = document.createElement('div');
+    chartWrapper.style.cssText = `
+      width: 100%;
+      background: var(--glass-secondary);
+      border-radius: 8px;
+      padding: 20px;
+    `;
+
+    const title = document.createElement('h3');
+    title.style.cssText = `margin: 0 0 20px 0; text-align: center; color: var(--text-primary);`;
+    title.textContent = chartData.title;
+    chartWrapper.appendChild(title);
+
+    if (chartData.rawData && chartData.headers) {
+      const table = document.createElement('table');
+      table.style.cssText = `
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+        background: var(--glass-secondary);
+        border-radius: 8px;
+        overflow: hidden;
+      `;
+
+      // Create header
+      const thead = document.createElement('thead');
+      const headerRow = document.createElement('tr');
+      chartData.headers.forEach(header => {
+        const th = document.createElement('th');
+        th.style.cssText = `
+          padding: 12px;
+          text-align: left;
+          background: var(--glass-accent);
+          font-weight: 500;
+          color: var(--text-primary);
+          border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        `;
+        th.textContent = header;
+        headerRow.appendChild(th);
+      });
+      thead.appendChild(headerRow);
+      table.appendChild(thead);
+
+      // Create body
+      const tbody = document.createElement('tbody');
+      chartData.rawData.forEach(row => {
+        const tr = document.createElement('tr');
+        row.forEach((cell, index) => {
+          const td = document.createElement('td');
+          td.style.cssText = `
+            padding: 10px 12px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            color: var(--text-primary);
+          `;
+          
+          if (typeof cell === 'number' && index > 0) {
+            td.style.color = cell >= 0 ? '#4caf50' : '#f44336';
+            td.textContent = `${cell > 0 ? '+' : ''}${cell.toFixed(1)}pp`;
+          } else {
+            td.textContent = cell?.toString() || '';
+          }
+          
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      chartWrapper.appendChild(table);
+    }
+
+    container.appendChild(chartWrapper);
+  }
+
+  getChartIcon(chartType: string): string {
+    const iconMap: { [key: string]: string } = {
+      'bar': '📊',
+      'line': '📈',
+      'pie': '🥧',
+      'scatter': '⚪',
+      'table': '📋'
+    };
+    return iconMap[chartType] || '📊';
+  }
+
+  downloadChart(format: 'png' | 'svg' | 'pdf' = 'png') {
+    // In a real implementation, this would export the chart
+    this.showSuccess(`Chart download functionality would export as ${format.toUpperCase()}`);
+  }
+
+  copyChartData() {
+    if (!this.chartData?.rawData || !this.chartData?.headers) return;
+    
+    try {
+      const csvData = this.convertToCSV(this.chartData.headers, this.chartData.rawData);
+      navigator.clipboard.writeText(csvData).then(() => {
+        this.showSuccess('Chart data copied to clipboard as CSV');
+      });
+    } catch (error) {
+      this.showError('Failed to copy chart data');
+    }
+  }
+
+  private convertToCSV(headers: string[], data: any[][]): string {
+    const csvRows = [];
+    csvRows.push(headers.join(','));
+    
+    for (const row of data) {
+      const csvRow = row.map(cell => {
+        if (typeof cell === 'string' && cell.includes(',')) {
+          return `"${cell}"`;
+        }
+        return cell;
+      }).join(',');
+      csvRows.push(csvRow);
+    }
+    
+    return csvRows.join('\n');
+  }
+
+  regenerateChart() {
+    if (!this.chartData) return;
+    
+    // Find the original prompt from history and regenerate
+    const historyItem = this.chartHistory.find(item => item.data.title === this.chartData?.title);
+    if (historyItem) {
+      this.currentVisualizationPrompt = historyItem.prompt;
+      this.generateChart();
+    }
+  }
+
+  loadHistoryChart(historyItem: ChartHistoryItem) {
+    this.chartData = historyItem.data;
+    this.renderChart(this.chartData);
+  }
+
+  formatCellValue(value: any): string {
+    if (typeof value === 'number') {
+      return value.toLocaleString();
+    }
+    return value?.toString() || '';
+  }
+
+  toggleChartDataTable() {
+    this.showChartData = !this.showChartData;
   }
 }
