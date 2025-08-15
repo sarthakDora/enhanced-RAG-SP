@@ -379,3 +379,5 @@ If you encounter issues:
 ---
 
 **Setup Guide Version 1.0** - Complete dependency management for Enhanced RAG System
+
+##backend can be started using powershell -ExecutionPolicy Bypass -File .\start_backend.ps1

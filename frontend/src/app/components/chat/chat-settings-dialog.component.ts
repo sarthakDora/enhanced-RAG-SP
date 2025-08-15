@@ -581,9 +581,9 @@ export class ChatSettingsDialogComponent implements OnInit {
     reranking_strategy: 'hybrid',
     prompts: {
       use_custom_prompts: true,  // Enable by default for performance attribution
-      system_prompt: '',
-      query_prompt: '',
-      response_format_prompt: ''
+      system_prompt: this.getDefaultSystemPrompt(),
+      query_prompt: this.getDefaultQueryPrompt(),
+      response_format_prompt: this.getDefaultResponseFormatPrompt()
     }
   };
 
@@ -633,21 +633,49 @@ export class ChatSettingsDialogComponent implements OnInit {
   }
 
   loadDefaultPrompts() {
-    this.apiService.getDefaultPrompts().subscribe({
-      next: (response) => {
-        this.settings.prompts.system_prompt = response.system_prompt;
-        this.settings.prompts.query_prompt = response.query_prompt;
-        this.settings.prompts.response_format_prompt = response.response_format_prompt;
-        console.log('Default prompts loaded for chat settings');
-      },
-      error: (error) => {
-        console.error('Failed to load default prompts:', error);
-      }
-    });
+    // Use local defaults for performance attribution
+    this.settings.prompts.system_prompt = this.getDefaultSystemPrompt();
+    this.settings.prompts.query_prompt = this.getDefaultQueryPrompt();
+    this.settings.prompts.response_format_prompt = this.getDefaultResponseFormatPrompt();
+    console.log('Default performance attribution prompts loaded');
   }
 
   resetToDefaults() {
     this.loadDefaultPrompts();
+  }
+
+  getDefaultSystemPrompt(): string {
+    return `You are an institutional performance attribution writer. Write ONLY what is explicitly provided.
+
+CRITICAL SAFEGUARDS:
+1. Don't claim "Allocation was the primary driver" unless allocation_pp exists
+2. Empty rankings = "Not reported in the context" (not invented highlights)
+3. Use % for returns, pp for attribution (never mix units)
+4. If only active_total_pp exists, acknowledge limited data
+5. No invention, assumption, or estimation of any data
+
+FORMAT: ≤ 150 words, direct statements only.`;
+  }
+
+  getDefaultQueryPrompt(): string {
+    return `Deterministic Fallback for Top Contributors/Detractors:
+1. Use total_attr_pp if present
+2. Else use total_management if present  
+3. Else compute sector_selection_pp + issue_selection_pp
+4. If none available, state "Ranking not available in context"`;
+  }
+
+  getDefaultResponseFormatPrompt(): string {
+    return `**Executive Summary**
+[Active return from context only]
+
+**Total Performance Drivers**  
+[Only list effects present in total_json]
+
+**Highlights**
+[Only use ranking_json data]
+
+Max 180 words. No invented data.`;
   }
 
   previewCombinedPrompt() {

@@ -6,7 +6,7 @@ import os
 from dotenv import load_dotenv
 
 from app.core.config import settings
-from app.routers import documents, chat, health, attribution
+from app.routers import documents, chat, health, attribution, viz_demo
 from app.routers import settings as settings_router
 from app.services.qdrant_service import QdrantService
 from app.services.ollama_service import OllamaService
@@ -158,6 +158,7 @@ app.include_router(health.router, prefix="/api", tags=["health"])
 app.include_router(documents.router, prefix="/api/documents", tags=["documents"])
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 app.include_router(attribution.router, prefix="/api", tags=["attribution"])
+app.include_router(viz_demo.router, prefix="/api", tags=["visualization-demo"])
 app.include_router(settings_router.router, prefix="/api", tags=["settings"])
 
 @app.get("/")

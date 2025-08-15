@@ -14,6 +14,7 @@ import { MatMenuModule } from '@angular/material/menu';
 import { MatSelectModule } from '@angular/material/select';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatSlideToggleModule } from '@angular/material/slide-toggle';
+import { Router } from '@angular/router';
 import { Subscription } from 'rxjs';
 
 import { ApiService } from '../../services/api.service';
@@ -1130,7 +1131,8 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewInit, AfterVie
   constructor(
     private apiService: ApiService,
     private snackBar: MatSnackBar,
-    private dialog: MatDialog
+    private dialog: MatDialog,
+    private router: Router
   ) {}
 
   ngOnInit() {
@@ -1595,6 +1597,29 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewInit, AfterVie
     this.selectedDocumentType = documentType;
     if (this.currentSession) {
       this.currentSession.document_type = documentType as DocumentType;
+    }
+    
+    // Redirect to attribution page if performance attribution is selected
+    if (documentType === 'performance_attribution') {
+      this.showAttributionRedirectDialog();
+    }
+  }
+
+  showAttributionRedirectDialog() {
+    const confirmRedirect = confirm(
+      'Performance Attribution analysis is best done on the dedicated Attribution page.\n\n' +
+      'Would you like to go to the Attribution page for:\n' +
+      '• Professional attribution commentary generation\n' +
+      '• Excel file upload and processing\n' +
+      '• Institutional-grade analysis tools\n\n' +
+      'Click OK to go to Attribution page, or Cancel to stay here.'
+    );
+    
+    if (confirmRedirect) {
+      this.router.navigate(['/attribution']);
+    } else {
+      // User chose to stay, show info message
+      this.showSuccess('💡 Tip: For best attribution analysis experience, visit the Attribution page from the main menu');
     }
   }
 

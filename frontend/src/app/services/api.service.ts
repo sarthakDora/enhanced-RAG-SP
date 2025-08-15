@@ -206,4 +206,8 @@ export class ApiService {
   getAttributionCollections(): Observable<any> {
     return this.http.get(`${this.baseUrl}/attribution/collections`);
   }
+
+  generateAttributionVisualization(formData: FormData): Observable<any> {
+    return this.http.post(`${this.baseUrl}/attribution/viz-working`, formData);
+  }
 }
