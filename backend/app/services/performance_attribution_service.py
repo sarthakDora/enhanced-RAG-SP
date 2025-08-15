@@ -4,8 +4,8 @@ import logging
 import pandas as pd
 import numpy as np
 import uuid
-import asyncio
 import math
+import json
 from dataclasses import dataclass
 
 from qdrant_client.models import Filter, FieldCondition, Match, PointStruct
@@ -13,10 +13,10 @@ from qdrant_client.http import models as http_models
 
 logger = logging.getLogger(__name__)
 
-# ----------------------------- Helpers ----------------------------- #
+# ============================= Helpers ============================= #
 
 def _json_sanitize(obj):
-    """Make dict/list/json values safe for Qdrant JSON (no NaN/Inf/numpy/or non-serializable)."""
+    """Make values safe for Qdrant JSON (no NaN/Inf/numpy/unserializable)."""
     if obj is None:
         return None
     if isinstance(obj, (str, bool)):
@@ -30,14 +30,12 @@ def _json_sanitize(obj):
         return [_json_sanitize(x) for x in obj]
     if isinstance(obj, dict):
         return {str(k): _json_sanitize(v) for k, v in obj.items()}
-    # Fallback to string for unsupported types
     return str(obj)
 
 def _none_if_nan(x):
     try:
         if x is None:
             return None
-        # support numpy scalars
         if isinstance(x, (np.floating,)):
             x = float(x)
         if isinstance(x, (np.integer,)):
@@ -48,21 +46,36 @@ def _none_if_nan(x):
     except Exception:
         return None
 
-# ----------------------------- Data Classes ----------------------------- #
+def _pp(x) -> Optional[float]:
+    """Coerce to float (pp), return None for bad/NaN."""
+    try:
+        if x is None:
+            return None
+        if isinstance(x, str):
+            x = x.replace("%", "").replace(",", "")
+        f = float(x)
+        return None if math.isnan(f) or math.isinf(f) else f
+    except Exception:
+        return None
+
+def _pct(x) -> Optional[float]:
+    """Alias for percent values (same handling as _pp)."""
+    return _pp(x)
+
+# ============================= Data ============================= #
 
 @dataclass
 class AttributionMetadata:
     """Metadata for attribution analysis"""
     period: str
-    asset_class: str  # "Equity" or "Fixed Income"
-    attribution_level: str  # "Sector" or "Country"
+    asset_class: str
+    attribution_level: str
     columns_present: List[str]
     has_fx: bool
     has_carry: bool
     has_roll: bool
     has_price: bool
     total_rows: int
-
 
 @dataclass
 class AttributionChunk:
@@ -73,13 +86,13 @@ class AttributionChunk:
     payload: Dict[str, Any]
     embedding: Optional[List[float]] = None
 
-
-# ---------------------- Performance Attribution Service ---------------------- #
+# =================== Performance Attribution Service =================== #
 
 class PerformanceAttributionService:
     """
-    Specialized service for processing performance attribution documents and generating
-    professional commentary using an institutional buy-side framework.
+    Processes attribution Excel files → builds chunks → stores in Qdrant.
+    Generates fast, concise PM-ready commentary with correct use of
+    performance (%) vs attribution (pp).
     """
 
     def __init__(self, ollama_service=None, qdrant_service=None):
@@ -88,111 +101,100 @@ class PerformanceAttributionService:
         self.embedding_model = "nomic-embed-text"
         self.embedding_dim: Optional[int] = None
 
-        self.system_prompt = """You are a buy-side performance attribution commentator for an institutional portfolio.
-Your audience is portfolio managers and senior analysts.
-Write concise, evidence-based commentary grounded ONLY in the provided table and derived stats.
-Quantify all statements using percentage points (pp) for attribution and % for returns.
-Break down performance into allocation (sector or country), security/issue selection, FX selection (if provided), and any other effects present in the data.
-Do not invent data or macro narrative beyond what is in the context.
-Tone: crisp, professional, and meaningful to experienced PMs.
+        # Crisp, PM-grade system instruction
+        self.system_prompt = (
+            "You are a buy-side performance attribution commentator for an institutional portfolio. "
+            "Audience: portfolio managers and senior analysts. Write concise, evidence-based commentary "
+            "using ONLY provided context. Use % for returns (performance) and pp for attribution effects. "
+            "Do not add macro narrative or assumptions. Tone: crisp and useful."
+        )
 
-Output structure (markdown):
-1) Executive Summary (3–4 sentences)
-2) Total Performance Drivers
-"""
-
-        self.developer_prompt = """- Only use numbers given in the user prompt.
-- Identify drivers explicitly as allocation, selection, FX, or other effects present.
-- Rank top contributors/detractors strictly by Total Attribution (pp) (aka Total Management).
-- Limit Executive Summary to 3–4 sentences; avoid filler.
-- Do not add securities, macro factors, or assumptions not in context.
-- Use one decimal place for pp values and retain +/- signs.
-"""
+        # Developer guardrails
+        self.developer_prompt = (
+            "- Use numbers only from context.\n"
+            "- Distinguish performance (%) vs attribution (pp).\n"
+            "- Report effects that exist in context: Allocation, Selection (Sector & Issue), FX, Carry, Roll, Price.\n"
+            "- If 'Total Management' is missing, define it as Sector Selection + Issue Selection (only if both present).\n"
+            "- Rank top contributors/detractors by Total Management; if missing, use Total Attribution; if still missing, use the fallback formula.\n"
+            "- One decimal for pp values with sign (+/-); returns keep one decimal % if provided.\n"
+            "- ≤ 180 words; no tables unless necessary.\n"
+        )
 
         self.last_chunks: List[AttributionChunk] = []
 
-    # ---------------------------- Prompt Builder ---------------------------- #
+    # ============================ Prompt Builder ============================ #
 
-    def get_unified_prompt_template(
-        self,
-        period_name: str,
-        asset_class: str,
-        attribution_level: str,
-        tabular_data: str,
-        columns_present: List[str],
-        portfolio_total_return: float,
-        benchmark_total_return: float,
-        total_active_return: float,
-        effects_breakdown: Dict[str, float],
-        top_contributors: List[Dict[str, Any]],
-        top_detractors: List[Dict[str, Any]],
-    ) -> str:
-        effects_lines = []
-        for effect, value in effects_breakdown.items():
-            effects_lines.append(f"- {effect}: {value:+.1f} pp")
-        effects_breakdown_text = "\n".join(effects_lines)
+    def _prompt_template_fast(self, summary: Dict[str, Any]) -> str:
+        """
+        Small, well-formed prompt for speed. Contains definitions & formulas,
+        distilled facts, and strict output format.
+        """
+        # Build effect line in a consistent order
+        ordered_labels = ["Allocation", "Selection", "FX", "Carry", "Roll", "Price", "Total Management", "Total Attribution"]
+        eff_lines = []
+        for k in ordered_labels:
+            if k in summary.get("effects", {}):
+                eff_lines.append(f"{k}: {summary['effects'][k]:+0.1f} pp")
+        effects_str = ", ".join(eff_lines) if eff_lines else "Not reported."
 
-        contributors_text = "\n".join(
-            f"{i}. {c['name']} ({c['attribution']:+.1f} pp)"
-            for i, c in enumerate(top_contributors[:3], 1)
+        # Rankings
+        top_text = "Not reported in the context."
+        bot_text = "Not reported in the context."
+        if summary.get("top_contributors"):
+            top_text = ", ".join([f"{x['bucket']} {x['pp']:+0.1f}" for x in summary["top_contributors"]])
+        if summary.get("top_detractors"):
+            bot_text = ", ".join([f"{x['bucket']} {x['pp']:+0.1f}" for x in summary["top_detractors"]])
+
+        # Destructure metrics
+        active = summary.get("active_pp")
+        port = summary.get("portfolio_ror")
+        bench = summary.get("benchmark_ror")
+
+        # Definitions block (kept compact but explicit)
+        defs = (
+            "Definitions & Rules:\n"
+            "- Performance is in %, Attribution is in pp.\n"
+            "- Active return (pp) = Portfolio % − Benchmark %.\n"
+            "- Total Management (pp) = Sector Selection (pp) + Issue Selection (pp) (fallback if total not provided).\n"
+            "- Report only effects provided in context. Do not invent.\n"
         )
-        detractors_text = "\n".join(
-            f"{i}. {d['name']} ({d['attribution']:+.1f} pp)"
-            for i, d in enumerate(top_detractors[:2], 1)
+
+        header = f"TASK: Institutional attribution commentary for {summary.get('period','the period')}.\n\n"
+        facts = (
+            "DATA SUMMARY:\n"
+            f"Active: {active:+0.1f} pp | Portfolio: {port:.1f}% | Benchmark: {bench:.1f}%\n"
+            f"Effects: {effects_str}\n\n"
         )
 
-        prompt = f"""Period: {period_name}
-Asset Class: {asset_class}
-Attribution Level: {attribution_level}  # "Country" or "Sector"
+        ranks = (
+            "RANKINGS:\n"
+            f"Top contributors: {top_text}\n"
+            f"Top detractors: {bot_text}\n\n"
+        )
 
-# Attribution Table ({attribution_level}-level)
-{tabular_data}
-# Columns present: {', '.join(columns_present)}
-# Notes: Attribution effects are in pp; returns are in %.
+        fmt = (
+            "OUTPUT (MARKDOWN):\n"
+            "**Executive Summary**\n"
+            "- State active return and portfolio vs benchmark (%).\n"
+            "- Summarize key drivers by effect in pp (only those present).\n"
+            "- Add brief breadth/dispersion if evident.\n\n"
+            "**Total Performance Drivers**\n"
+            "- List effects present with pp values.\n\n"
+            "**Country/Sector-Level Highlights**\n"
+            "- Top contributors (by Total Management, else Total Attribution).\n"
+            "- Top detractors (same rule).\n\n"
+            "**Risks / Watch Items**\n"
+            "- Only if suggested by concentration or effect pattern; else omit.\n\n"
+            "CONSTRAINTS:\n"
+            "- Use one decimal for pp and retain +/- signs.\n"
+            "- Never express attribution in %.\n"
+            "- If any required value is missing, write: 'Not reported in the context.'\n"
+            "- ≤ 180 words.\n"
+        )
 
-# Derived Stats
-Portfolio Total Return: {portfolio_total_return:.2f}%
-Benchmark Total Return: {benchmark_total_return:.2f}%
-Active Return: {total_active_return:+.2f} pp
+        return header + defs + facts + ranks + fmt
 
-Breakdown (only effects present in the table):
-{effects_breakdown_text}
-
-Top 3 Contributors by Total Attribution (pp):
-{contributors_text}
-
-Top 2 Detractors by Total Attribution (pp):
-{detractors_text}
-
-# Task
-Using ONLY the table and derived stats above, generate a concise portfolio attribution commentary for {period_name} following this markdown:
-
-**Executive Summary**
-<3–4 sentences summarizing active return, main drivers (by effect), and breadth of performance. Keep it crisp and PM-focused.>
-
-**Total Performance Drivers**
-- Portfolio ROR: {portfolio_total_return:.2f}% | Benchmark ROR: {benchmark_total_return:.2f}%
-- Active return: {total_active_return:+.1f} pp
-- Attribution breakdown: {', '.join([f"{k} = {v:+.1f} pp" for k, v in effects_breakdown.items()])}
-
-**{attribution_level}-Level Highlights**
-- <Top contributor 1>: quantify and name the specific effect(s) that drove it.
-- <Top contributor 2>: same.
-- <Top contributor 3>: same.
-- <Top detractor 1>: quantify and specify effect(s).
-- <Top detractor 2>: quantify and specify effect(s).
-
-**Risks / Watch Items**
-<Optional, only if the data signals concentration, FX sensitivity, rate/duration, or other notable patterns.>
-
-Constraints:
-- Use one decimal place for pp values and retain +/- signs.
-- Cite only numbers present in the context (or simple arithmetic already shown).
-- If an effect column (e.g., FX) is not present, do not mention it.
-"""
-        return prompt
-
-    # --------------------------- Excel Extraction --------------------------- #
+    # =========================== Excel Extraction =========================== #
 
     def extract_attribution_data_from_tables(self, tables: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """Find the first likely attribution table in a pre-parsed Excel structure."""
@@ -232,7 +234,6 @@ Constraints:
                 "tabular_data": self._format_table_for_display(table_data, columns),
             }
 
-            # try totals (heuristic in this path)
             for row in table_data:
                 for col_name, value in row.items():
                     if isinstance(value, str):
@@ -244,7 +245,6 @@ Constraints:
 
             results["total_active_return"] = results["portfolio_total_return"] - results["benchmark_total_return"]
 
-            # identify data rows, total attribution column
             attribution_rows = [r for r in table_data if self._is_data_row(r)]
             total_attr_col = self._find_total_attribution_column(columns)
 
@@ -281,7 +281,7 @@ Constraints:
             logger.error(f"Error parsing attribution table: {e}")
             return None
 
-    # -------------------------- Parsing Helper Utils ------------------------- #
+    # ======================== Parsing Helper Utils ======================== #
 
     def _format_table_for_display(self, table_data: List[Dict], columns: List[str]) -> str:
         if not table_data:
@@ -336,26 +336,12 @@ Constraints:
                 return 0.0
         return 0.0
 
-    # --------------------------- Commentary (LLM) --------------------------- #
+    # ============================ Commentary (LLM) ============================ #
 
     async def generate_commentary(self, attribution_data: Dict[str, Any], ollama_service) -> str:
         try:
-            prompt = self.get_unified_prompt_template(
-                period_name=attribution_data.get("period_name", "Q2 2025"),
-                asset_class=attribution_data.get("asset_class", "Mixed"),
-                attribution_level=attribution_data.get("attribution_level", "Sector"),
-                tabular_data=attribution_data.get("tabular_data", ""),
-                columns_present=list(attribution_data.get("effects_breakdown", {}).keys()),
-                portfolio_total_return=attribution_data.get("portfolio_total_return", 0.0),
-                benchmark_total_return=attribution_data.get("benchmark_total_return", 0.0),
-                total_active_return=attribution_data.get("total_active_return", 0.0),
-                effects_breakdown=attribution_data.get("effects_breakdown", {}),
-                top_contributors=attribution_data.get("top_contributors", []),
-                top_detractors=attribution_data.get("top_detractors", []),
-            )
-            full_prompt = f"{self.system_prompt}\n\n{self.developer_prompt}\n\n{prompt}"
-            commentary = await ollama_service.generate_text(full_prompt)
-            return commentary
+            # Not used in the current path (we use summarized prompt), but kept for compatibility.
+            return await ollama_service.generate_text("Not used")
         except Exception as e:
             logger.error(f"Error generating commentary: {e}")
             return f"Error generating performance attribution commentary: {str(e)}"
@@ -375,7 +361,7 @@ Constraints:
             }
         return metadata
 
-    # --------------------------- Public Entry Point -------------------------- #
+    # ============================ Public Entry ============================ #
 
     async def process_attribution_file(self, file_path: str, session_id: str) -> Dict[str, Any]:
         """
@@ -411,7 +397,7 @@ Constraints:
             logger.error(f"Error processing attribution file: {e}")
             raise
 
-    # --------------------------- Excel → DataFrame --------------------------- #
+    # ========================== Excel → DataFrame ========================== #
 
     async def _parse_and_normalize_excel(self, file_path: str) -> Tuple[pd.DataFrame, AttributionMetadata]:
         # Use context manager so Windows can delete the temp file later
@@ -425,7 +411,7 @@ Constraints:
         if df is None:
             raise ValueError("No suitable attribution sheet found")
 
-        # Detect asset class & level
+        # Detect asset class & attribution level
         columns_lower = [str(c).lower() for c in df.columns]
         columns_str = " ".join(columns_lower)
         if any(term in columns_str for term in ["gics", "sector", "industry"]):
@@ -455,30 +441,32 @@ Constraints:
         # Drop empty buckets
         df_clean = df_clean.dropna(subset=[bucket_col])
 
-        # Identify effects
+        # Identify effect columns (loose matching, and pp/contribution)
         effects_map = {
             "allocation": ["allocation", "alloc", "country_allocation", "sector_allocation"],
-            "selection":  ["selection", "select", "security_selection", "issue_selection"],
+            "sector_selection": ["sector_selection", "sector_select", "sel_sector", "selection_sector"],
+            "issue_selection":  ["issue_selection", "security_selection", "select_issue", "selection_issue"],
             "fx":         ["fx", "currency", "foreign_exchange", "fx_selection"],
             "carry":      ["carry", "yield", "run_yield"],
             "roll":       ["roll", "rolldown", "roll_down"],
             "price":      ["price", "price_return"],
+            "total_mgmt": ["total_management", "total_mgmt", "total_mgmt_pp"],
+            "total_attr": ["total_attr_pp", "total_attribution"],
         }
-        effect_columns: Dict[str, Optional[str]] = {}
-        flags: Dict[str, bool] = {}
-        for name, pats in effects_map.items():
-            found = None
-            for p in pats:
+
+        def _find_effect(col_patterns: List[str]) -> Optional[str]:
+            for p in col_patterns:
                 cands = [c for c in df_clean.columns if p in c and ("pp" in c or "contribution" in c or c.endswith("_pp"))]
                 if cands:
-                    found = cands[0]; break
-            effect_columns[name] = found
-            flags[f"has_{name}"] = found is not None
+                    return cands[0]
+            return None
+
+        effect_cols: Dict[str, Optional[str]] = {k: _find_effect(v) for k, v in effects_map.items()}
 
         # Coerce numerics except bucket
-        numeric_cols = [c for c in df_clean.columns if c != bucket_col]
-        for c in numeric_cols:
-            df_clean[c] = pd.to_numeric(df_clean[c], errors="coerce")
+        for c in df_clean.columns:
+            if c != bucket_col:
+                df_clean[c] = pd.to_numeric(df_clean[c], errors="coerce")
 
         # Return columns
         portfolio_col = self._find_column(df_clean.columns, ["portfolio_ror", "portfolio_return", "port_ret"])
@@ -486,10 +474,24 @@ Constraints:
         if portfolio_col and benchmark_col:
             df_clean["active_ror_pp"] = df_clean[portfolio_col] - df_clean[benchmark_col]
 
-        # Total attribution (if not present)
-        available_effects = [col for col in effect_columns.values() if col is not None]
-        if available_effects and "total_attr_pp" not in df_clean.columns:
-            df_clean["total_attr_pp"] = df_clean[available_effects].sum(axis=1, skipna=True)
+        # Total Management fallback = Sector Selection + Issue Selection (if both present)
+        if not effect_cols["total_mgmt"]:
+            if effect_cols["sector_selection"] and effect_cols["issue_selection"]:
+                df_clean["total_management"] = (
+                    df_clean[effect_cols["sector_selection"]].fillna(0.0)
+                    + df_clean[effect_cols["issue_selection"]].fillna(0.0)
+                )
+                effect_cols["total_mgmt"] = "total_management"
+
+        # Total Attribution (if not present)
+        if not effect_cols["total_attr"]:
+            available = [c for c in [effect_cols["allocation"], effect_cols["sector_selection"],
+                                     effect_cols["issue_selection"], effect_cols["fx"],
+                                     effect_cols["carry"], effect_cols["roll"], effect_cols["price"]]
+                         if c]
+            if available:
+                df_clean["total_attr_pp"] = df_clean[available].sum(axis=1, skipna=True)
+                effect_cols["total_attr"] = "total_attr_pp"
 
         # Period from filename
         period = self._extract_period_from_filename(file_path)
@@ -499,12 +501,19 @@ Constraints:
             asset_class=asset_class,
             attribution_level=attribution_level,
             columns_present=list(df_clean.columns),
-            has_fx=flags.get("has_fx", False),
-            has_carry=flags.get("has_carry", False),
-            has_roll=flags.get("has_roll", False),
-            has_price=flags.get("has_price", False),
+            has_fx=bool(effect_cols["fx"]),
+            has_carry=bool(effect_cols["carry"]),
+            has_roll=bool(effect_cols["roll"]),
+            has_price=bool(effect_cols["price"]),
             total_rows=len(df_clean),
         )
+
+        # Stash the columns for later ranking logic
+        self._effect_cols = effect_cols
+        self._bucket_col = bucket_col
+        self._portfolio_col = portfolio_col
+        self._benchmark_col = benchmark_col
+
         return df_clean, metadata
 
     def _canonicalize_column_name(self, col: str) -> str:
@@ -530,7 +539,7 @@ Constraints:
             return f"Q2 {y.group(1)}"
         return "Q2 2025"
 
-    # --------------------------- Chunk Building --------------------------- #
+    # ============================ Chunk Building ============================ #
 
     async def _build_chunks(self, df: pd.DataFrame, metadata: AttributionMetadata, session_id: str) -> List[AttributionChunk]:
         chunks: List[AttributionChunk] = []
@@ -545,10 +554,10 @@ Constraints:
         for _, row in df_rows.iterrows():
             chunks.append(self._build_row_chunk(row, metadata, bucket_col, session_id))
 
-        # Totals chunk (weighted returns, effect sums)
+        # Totals chunk
         chunks.append(self._build_totals_chunk(df_rows, df, metadata, session_id))
 
-        # Rankings chunk
+        # Rankings chunk (Total Management → Total Attribution → fallback formula)
         chunks.append(self._build_rankings_chunk(df_rows, metadata, bucket_col, session_id))
 
         # Schema chunk
@@ -579,11 +588,15 @@ Constraints:
 
         # Effects
         allocation_pp = self._safe_get_numeric(row, ["allocation", "allocation_pp", "country_allocation", "sector_allocation"])
-        selection_pp  = self._safe_get_numeric(row, ["selection", "selection_pp", "security_selection", "issue_selection"])
+        sector_sel_pp = self._safe_get_numeric(row, ["sector_selection"])
+        issue_sel_pp  = self._safe_get_numeric(row, ["issue_selection", "security_selection"])
         fx_pp         = self._safe_get_numeric(row, ["fx", "fx_pp", "currency", "fx_selection"]) if metadata.has_fx else None
         carry_pp      = self._safe_get_numeric(row, ["carry", "carry_pp", "run_yield"]) if metadata.has_carry else None
         roll_pp       = self._safe_get_numeric(row, ["roll", "roll_pp", "rolldown", "roll_down"]) if metadata.has_roll else None
         price_pp      = self._safe_get_numeric(row, ["price", "price_pp", "price_return"]) if metadata.has_price else None
+        total_mgmt_pp = self._safe_get_numeric(row, ["total_management", "total_mgmt_pp"])
+        if total_mgmt_pp is None and sector_sel_pp is not None and issue_sel_pp is not None:
+            total_mgmt_pp = sector_sel_pp + issue_sel_pp
         total_attr_pp = self._safe_get_numeric(row, ["total_attr_pp", "total_attribution", "total_management"])
 
         # Weights
@@ -592,8 +605,6 @@ Constraints:
         rel_wt_pp = None
         if portfolio_wt is not None and benchmark_wt is not None:
             rel_wt_pp = portfolio_wt - benchmark_wt
-
-        
 
         # Text
         parts = [f"{metadata.period} • {metadata.attribution_level} row: {bucket_name}"]
@@ -604,15 +615,18 @@ Constraints:
 
         eff = []
         if allocation_pp is not None: eff.append(f"Allocation {allocation_pp:+.1f}")
-        if selection_pp  is not None: eff.append(f"Selection {selection_pp:+.1f}")
+        if sector_sel_pp is not None: eff.append(f"Sector Selection {sector_sel_pp:+.1f}")
+        if issue_sel_pp  is not None: eff.append(f"Issue Selection {issue_sel_pp:+.1f}")
         if fx_pp        is not None: eff.append(f"FX {fx_pp:+.1f}")
         if carry_pp     is not None: eff.append(f"Carry {carry_pp:+.1f}")
         if roll_pp      is not None: eff.append(f"Roll {roll_pp:+.1f}")
         if price_pp     is not None: eff.append(f"Price {price_pp:+.1f}")
         if eff: parts.append("Attribution effects (pp): " + ", ".join(eff))
 
-        if total_attr_pp is not None:
-            parts.append(f"Total Attribution (aka Total Management): {total_attr_pp:+.1f} pp")
+        if total_mgmt_pp is not None:
+            parts.append(f"Total Management: {total_mgmt_pp:+.1f} pp")
+        if total_attr_pp is not None and (total_mgmt_pp is None or abs(total_attr_pp - total_mgmt_pp) > 1e-9):
+            parts.append(f"Total Attribution: {total_attr_pp:+.1f} pp")
 
         if portfolio_wt is not None and benchmark_wt is not None:
             parts.append(f"Weights: Portfolio {portfolio_wt:.1f}%, Benchmark {benchmark_wt:.1f}%")
@@ -629,36 +643,36 @@ Constraints:
             "bucket": bucket_name,
             "period": metadata.period,
             "columns_present": metadata.columns_present,
-            "chunk_id": f"row_{bucket_name.replace(' ', '_').replace('/', '_').replace('-', '_')}",  # preserve original id
+            "chunk_id": f"row_{bucket_name.replace(' ', '_').replace('/', '_').replace('-', '_')}",
             "portfolio_ror": _none_if_nan(portfolio_ror),
             "benchmark_ror": _none_if_nan(benchmark_ror),
             "active_ror_pp": _none_if_nan(active_ror_pp),
             "allocation_pp": _none_if_nan(allocation_pp),
-            "selection_pp": _none_if_nan(selection_pp),
+            "sector_selection_pp": _none_if_nan(sector_sel_pp),
+            "issue_selection_pp": _none_if_nan(issue_sel_pp),
             "fx_pp": _none_if_nan(fx_pp),
             "carry_pp": _none_if_nan(carry_pp),
             "roll_pp": _none_if_nan(roll_pp),
             "price_pp": _none_if_nan(price_pp),
+            "total_management": _none_if_nan(total_mgmt_pp),
             "total_attr_pp": _none_if_nan(total_attr_pp),
-            "portfolio_wt": _none_if_nan(portfolio_wt),
-            "benchmark_wt": _none_if_nan(benchmark_wt),
-            "rel_wt_pp": _none_if_nan(rel_wt_pp),
+            "portfolio_weight": _none_if_nan(portfolio_wt),
+            "benchmark_weight": _none_if_nan(benchmark_wt),
+            "relative_weight_pp": _none_if_nan(rel_wt_pp),
             "has_fx": bool(metadata.has_fx),
             "has_carry": bool(metadata.has_carry),
             "has_roll": bool(metadata.has_roll),
             "has_price": bool(metadata.has_price),
         }
 
-        # Note: Qdrant IDs must be int or UUID; use UUID here
-        chunk_uuid = str(uuid.uuid4())
-        return AttributionChunk(chunk_uuid, "row", text, payload)
+        return AttributionChunk(str(uuid.uuid4()), "row", text, payload)
 
     def _build_totals_chunk(self, df_rows: pd.DataFrame, df_all: pd.DataFrame, metadata: AttributionMetadata, session_id: str) -> AttributionChunk:
         # detect columns
-        port_r = self._find_column(df_all.columns, ["portfolio_ror", "portfolio_return"])
-        bench_r = self._find_column(df_all.columns, ["benchmark_ror", "benchmark_return"])
-        port_w = self._find_column(df_all.columns, ["portfolio_weight", "portfolio_weight_%"])
-        bench_w = self._find_column(df_all.columns, ["benchmark_weight", "benchmark_weight_%"])
+        port_r = self._portfolio_col or self._find_column(df_all.columns, ["portfolio_ror", "portfolio_return"])
+        bench_r = self._benchmark_col or self._find_column(df_all.columns, ["benchmark_ror", "benchmark_return"])
+        port_w = self._find_column(df_all.columns, ["portfolio_weight", "portfolio_weight_%", "portfolio_wt"])
+        bench_w = self._find_column(df_all.columns, ["benchmark_weight", "benchmark_weight_%", "benchmark_wt"])
 
         portfolio_total = None
         benchmark_total = None
@@ -680,11 +694,26 @@ Constraints:
             return float(pd.to_numeric(df_rows[col], errors="coerce").fillna(0).sum())
 
         allocation_total = sum_if(["allocation", "allocation_effect", "country_allocation", "sector_allocation"])
-        selection_total  = sum_if(["selection", "selection_effect", "security_selection", "issue_selection"])
-        fx_total         = sum_if(["fx", "currency", "fx_selection"]) if metadata.has_fx else None
-        carry_total      = sum_if(["carry", "run_yield"]) if metadata.has_carry else None
-        roll_total       = sum_if(["roll", "rolldown", "roll_down"]) if metadata.has_roll else None
-        price_total      = sum_if(["price", "price_return"]) if metadata.has_price else None
+        sector_sel_total = sum_if(["sector_selection"])
+        issue_sel_total  = sum_if(["issue_selection", "security_selection"])
+        selection_total  = None
+        if sector_sel_total is not None and issue_sel_total is not None:
+            selection_total = sector_sel_total + issue_sel_total
+
+        fx_total    = sum_if(["fx", "currency", "fx_selection"]) if metadata.has_fx else None
+        carry_total = sum_if(["carry", "run_yield"]) if metadata.has_carry else None
+        roll_total  = sum_if(["roll", "rolldown", "roll_down"]) if metadata.has_roll else None
+        price_total = sum_if(["price", "price_return"]) if metadata.has_price else None
+
+        total_mgmt_total = sum_if(["total_management", "total_mgmt_pp"])
+        if total_mgmt_total is None and selection_total is not None:
+            total_mgmt_total = selection_total
+
+        total_attr_total = sum_if(["total_attr_pp", "total_attribution"])
+        if total_attr_total is None:
+            # last resort
+            comps = [x for x in [allocation_total, selection_total, fx_total, carry_total, roll_total, price_total] if x is not None]
+            total_attr_total = sum(comps) if comps else None
 
         active_pp = None
         if portfolio_total is not None and benchmark_total is not None and not (pd.isna(portfolio_total) or pd.isna(benchmark_total)):
@@ -695,10 +724,14 @@ Constraints:
             lines.append(f"Portfolio {portfolio_total:.1f}% vs Benchmark {benchmark_total:.1f}% → Active {active_pp:+.1f} pp")
 
         breakdown = []
-        for label, val in [("Allocation", allocation_total), ("Selection", selection_total),
-                           ("FX", fx_total), ("Carry", carry_total), ("Roll", roll_total), ("Price", price_total)]:
-            if val is not None:
-                breakdown.append(f"{label} {val:+.1f}")
+        if allocation_total is not None: breakdown.append(f"Allocation {allocation_total:+.1f}")
+        if selection_total  is not None: breakdown.append(f"Selection {selection_total:+.1f}")
+        if fx_total         is not None: breakdown.append(f"FX {fx_total:+.1f}")
+        if carry_total      is not None: breakdown.append(f"Carry {carry_total:+.1f}")
+        if roll_total       is not None: breakdown.append(f"Roll {roll_total:+.1f}")
+        if price_total      is not None: breakdown.append(f"Price {price_total:+.1f}")
+        if total_mgmt_total is not None: breakdown.append(f"Total Management {total_mgmt_total:+.1f}")
+        if total_attr_total is not None: breakdown.append(f"Total Attribution {total_attr_total:+.1f}")
         if breakdown:
             lines.append("Attribution breakdown (pp): " + ", ".join(breakdown))
         text = "\n".join(lines)
@@ -709,7 +742,7 @@ Constraints:
             "period": metadata.period,
             "asset_class": metadata.asset_class,
             "level": metadata.attribution_level,
-            "chunk_id": "total_summary",  # preserve logical label
+            "chunk_id": "total_summary",
             "portfolio_total_ror": _none_if_nan(None if portfolio_total is None else float(portfolio_total)),
             "benchmark_total_ror": _none_if_nan(None if benchmark_total is None else float(benchmark_total)),
             "active_total_pp": _none_if_nan(None if active_pp is None else float(active_pp)),
@@ -719,27 +752,43 @@ Constraints:
             "carry_pp": _none_if_nan(carry_total),
             "roll_pp": _none_if_nan(roll_total),
             "price_pp": _none_if_nan(price_total),
+            "total_management_pp": _none_if_nan(total_mgmt_total),
+            "total_attribution_pp": _none_if_nan(total_attr_total),
         }
         return AttributionChunk(str(uuid.uuid4()), "total", text, payload)
 
     def _build_rankings_chunk(self, df_rows: pd.DataFrame, metadata: AttributionMetadata, bucket_col: str, session_id: str) -> AttributionChunk:
-        total_attr_col = self._find_column(df_rows.columns, ["total_attr_pp", "total_attribution", "total_management"])
-        if total_attr_col is None:
-            text = f"{metadata.period} • Rankings: No total attribution data available"
+        # Preferred rank key: Total Management → Total Attribution → fallback: sector+issue selection
+        rank_key = None
+        for key in ["total_management", "total_attr_pp"]:
+            if key in df_rows.columns:
+                rank_key = key
+                break
+        if rank_key is None:
+            sector_col = "sector_selection" if "sector_selection" in df_rows.columns else None
+            issue_col  = "issue_selection" if "issue_selection" in df_rows.columns else None
+            if sector_col and issue_col:
+                df_rows = df_rows.copy()
+                df_rows["__fallback_rank__"] = df_rows[sector_col].fillna(0.0) + df_rows[issue_col].fillna(0.0)
+                rank_key = "__fallback_rank__"
+
+        if rank_key is None:
+            text = f"{metadata.period} • Rankings: No total management/attribution data available"
             payload = {"type": "ranking", "session_id": session_id, "rank_key": None, "chunk_id": "ranking_no_data"}
             return AttributionChunk(str(uuid.uuid4()), "ranking", text, payload)
 
-        df_sorted = df_rows.dropna(subset=[total_attr_col]).sort_values(total_attr_col, ascending=False)
+        df_sorted = df_rows.dropna(subset=[rank_key]).sort_values(rank_key, ascending=False)
 
         top_contrib, top_detract = [], []
         for _, r in df_sorted.head(3).iterrows():
-            if r[total_attr_col] > 0:
-                top_contrib.append({"bucket": str(r[bucket_col]), "pp": float(r[total_attr_col])})
+            if r[rank_key] > 0:
+                top_contrib.append({"bucket": str(r[bucket_col]), "pp": float(r[rank_key])})
         for _, r in df_sorted.tail(3).iterrows():
-            if r[total_attr_col] < 0:
-                top_detract.append({"bucket": str(r[bucket_col]), "pp": float(r[total_attr_col])})
+            if r[rank_key] < 0:
+                top_detract.append({"bucket": str(r[bucket_col]), "pp": float(r[rank_key])})
 
-        text_parts = [f"{metadata.period} • Rankings by Total Attribution (pp)  (Total Attribution ≡ Total Management)"]
+        label = "Total Management" if rank_key in ["total_management", "__fallback_rank__"] else "Total Attribution"
+        text_parts = [f"{metadata.period} • Rankings by {label} (pp)"]
         if top_contrib:
             text_parts.append("Top: " + ", ".join([f"{t['bucket']} {t['pp']:+.1f}" for t in top_contrib]))
         if top_detract:
@@ -749,24 +798,24 @@ Constraints:
         payload = {
             "type": "ranking",
             "session_id": session_id,
-            "rank_key": "total_attr_pp",
+            "rank_key": "total_management" if rank_key in ["total_management", "__fallback_rank__"] else "total_attr_pp",
             "top_contributors": _json_sanitize(top_contrib),
             "top_detractors": _json_sanitize(top_detract),
             "asset_class": metadata.asset_class,
             "level": metadata.attribution_level,
             "period": metadata.period,
-            "chunk_id": "ranking_total_attr_pp",
+            "chunk_id": "ranking_total_management" if rank_key in ["total_management", "__fallback_rank__"] else "ranking_total_attr_pp",
         }
         return AttributionChunk(str(uuid.uuid4()), "ranking", text, payload)
 
     def _build_schema_chunk(self, metadata: AttributionMetadata, session_id: str) -> AttributionChunk:
         explanations = {
-            "allocation": f"{metadata.attribution_level} allocation effect - impact of over/under-weighting vs benchmark",
-            "selection": "Security/issue selection effect - impact of picking securities within each category",
-            "fx": "Foreign exchange selection effect - impact of currency positioning decisions",
-            "carry": "Carry/yield effect - income and carry positioning",
-            "roll": "Roll-down effect - yield-curve positioning and time decay",
-            "price": "Price return effect - credit spread and price moves",
+            "allocation": f"{metadata.attribution_level} allocation effect — impact of over/under-weighting vs benchmark (pp).",
+            "selection": "Selection effects — Sector Selection (pp) and Issue Selection (pp).",
+            "fx": "FX selection effect — impact of currency positioning (pp).",
+            "carry": "Carry/Run Yield effect (pp).",
+            "roll": "Roll-down effect (pp).",
+            "price": "Price return effect (pp).",
         }
         present = [explanations["allocation"], explanations["selection"]]
         if metadata.has_fx: present.append(explanations["fx"])
@@ -817,7 +866,7 @@ Constraints:
                                 pass
         return None
 
-    # ----------------------------- Embeddings ----------------------------- #
+    # ============================ Embeddings ============================ #
 
     async def _generate_embeddings(self, chunks: List[AttributionChunk]) -> List[AttributionChunk]:
         if not self.ollama:
@@ -830,11 +879,10 @@ Constraints:
         for c, e in zip(chunks, embeddings):
             if len(e) != self.embedding_dim:
                 raise RuntimeError(f"Embedding length mismatch: expected {self.embedding_dim}, got {len(e)}")
-            # ensure pure floats
             c.embedding = [float(x) for x in e]
         return chunks
 
-    # ------------------------------- Storage ------------------------------ #
+    # ============================== Storage ============================== #
 
     async def _store_chunks_in_qdrant(self, chunks: List[AttributionChunk], collection_name: str, session_id: str = None):
         if not self.qdrant:
@@ -842,24 +890,18 @@ Constraints:
         if not self.embedding_dim:
             raise ValueError("Embedding dimension unknown; generate embeddings first")
 
-        # Recreate collection with correct vector size to avoid stale config mismatches
+        # Recreate collection with correct vector size
         try:
             self.qdrant.client.recreate_collection(
                 collection_name=collection_name,
-                vectors_config=http_models.VectorParams(
-                    size=self.embedding_dim,
-                    distance=http_models.Distance.COSINE
-                )
+                vectors_config=http_models.VectorParams(size=self.embedding_dim, distance=http_models.Distance.COSINE)
             )
         except Exception as e:
-            logger.warning(f"recreate_collection failed or collection exists: {e}")
+            logger.warning(f"recreate_collection failed or exists: {e}")
             try:
                 self.qdrant.client.create_collection(
                     collection_name=collection_name,
-                    vectors_config=http_models.VectorParams(
-                        size=self.embedding_dim,
-                        distance=http_models.Distance.COSINE
-                    )
+                    vectors_config=http_models.VectorParams(size=self.embedding_dim, distance=http_models.Distance.COSINE)
                 )
             except Exception as e2:
                 logger.info(f"create_collection result: {e2}")
@@ -871,35 +913,34 @@ Constraints:
                 logger.error(f"Skipping {ch.chunk_id}: bad embedding")
                 continue
             vector = [float(x) for x in ch.embedding]
-            # Merge the logical chunk_id into payload so we can retrieve it later
             payload = dict(_json_sanitize(ch.payload) or {})
             if "chunk_id" not in payload:
-                payload["chunk_id"] = ch.chunk_id  # store uuid as well
-
-            # Use UUID ONLY for Qdrant id
+                payload["chunk_id"] = ch.chunk_id
             points.append(PointStruct(id=str(uuid.uuid4()), vector=vector, payload=payload))
 
         if not points:
             raise ValueError("No valid points to upsert")
 
-        # Primary upsert via client with wait=True
+        # Primary upsert via client with wait=True; if it fails, use REST
         try:
             self.qdrant.client.upsert(collection_name=collection_name, points=points, wait=True)
         except Exception as e:
             logger.error(f"Qdrant upsert via client failed: {e}")
-
-            # REST fallback
-            import requests
-            rest_points = [{"id": str(p.id), "vector": {"": list(p.vector[""])}, "payload": p.payload} for p in points]
-            body = _json_sanitize(rest_points)
-            resp = requests.put(
-                f"http://localhost:6333/collections/{collection_name}/points?wait=true",
-                json=body,
-                headers={"Content-Type": "application/json"},
-                timeout=30
-            )
-            if resp.status_code != 200:
-                raise RuntimeError(f"REST upsert failed: {resp.status_code} {resp.text}")
+            try:
+                import requests
+                rest_points = [{"id": str(p.id), "vector": list(p.vector), "payload": p.payload} for p in points]
+                body = {"points": _json_sanitize(rest_points)}
+                resp = requests.put(
+                    f"http://localhost:6333/collections/{collection_name}/points?wait=true",
+                    json=body,
+                    headers={"Content-Type": "application/json"},
+                    timeout=30
+                )
+                if resp.status_code != 200:
+                    raise RuntimeError(f"REST upsert failed: {resp.status_code} {resp.text}")
+            except Exception as e2:
+                logger.error(f"Qdrant REST upsert failed: {e2}")
+                raise
 
         # Verify count
         try:
@@ -908,7 +949,7 @@ Constraints:
         except Exception as e:
             logger.warning(f"Count check failed: {e}")
 
-    # ------------------------------ Retrieval ----------------------------- #
+    # ============================= Retrieval ============================= #
 
     async def answer_question(self, session_id: str, question: str, mode: str = "qa", context: str = None) -> Dict[str, Any]:
         if not self.qdrant or not self.ollama:
@@ -916,9 +957,12 @@ Constraints:
 
         collection_name = f"attr_session_{session_id}"
 
-        # Use provided context (from UI) if present
+        # Use provided context (from UI) if present; else search Qdrant
         if context:
-            context_json = context
+            try:
+                payloads = json.loads(context)
+            except Exception:
+                payloads = []
         else:
             if not await self.qdrant.collection_exists(collection_name):
                 raise ValueError(f"No attribution data found for session {session_id}")
@@ -930,25 +974,25 @@ Constraints:
                 emb_list = await self.ollama.generate_embeddings([question])
                 query_embedding = emb_list[0]
 
+            # Filter hints
             filters = self._derive_filters_from_question(question)
 
-            # Search with named vector (empty string for default)
+            # Search (support both signatures)
             try:
                 search_results = self.qdrant.client.search(
                     collection_name=collection_name,
                     query_vector=("", query_embedding),
                     query_filter=filters,
-                    limit=12,
+                    limit=24,
                     with_payload=True,
                 )
             except (TypeError, Exception):
-                # Fallback to older format
                 try:
                     search_results = self.qdrant.client.search(
                         collection_name=collection_name,
                         query_vector=query_embedding,
                         query_filter=filters,
-                        limit=12,
+                        limit=24,
                         with_payload=True,
                     )
                 except TypeError:
@@ -956,20 +1000,19 @@ Constraints:
                         collection_name=collection_name,
                         vector=query_embedding,
                         query_filter=filters,
-                        limit=12,
+                        limit=24,
                         with_payload=True,
                     )
 
-            import json
-            logger.info(f"Search found {len(search_results or [])} results for question: {question} (mode: {mode})")
-            context_json = json.dumps([r.payload for r in (search_results or [])], indent=2)
-            logger.info(f"Context JSON length: {len(context_json)} characters for mode: {mode}")
+            payloads = [r.payload for r in (search_results or [])]
 
-        # Generate response
+        # Summarize payloads → compact facts for fast prompting
+        summary = self._summarize_payloads(payloads)
+
         if mode == "commentary":
-            return await self._generate_commentary_response(context_json, session_id)
+            return await self._generate_commentary_fast(summary, session_id)
         else:
-            return await self._generate_qa_response(question, context_json, session_id)
+            return await self._generate_qa_fast(question, summary, session_id)
 
     def _derive_filters_from_question(self, question: str) -> Optional[Filter]:
         q = question.lower()
@@ -978,80 +1021,151 @@ Constraints:
             must.append(FieldCondition(key="has_fx", match=Match(value=True)))
         return Filter(must=must) if must else None
 
-    async def _generate_commentary_response(self, context: str, session_id: str) -> Dict[str, Any]:
-        # Validate context is not empty or meaningless
-        context_lines = [line.strip() for line in context.split('\n') if line.strip()]
-        if len(context_lines) < 3 or not any('portfolio' in line.lower() or 'return' in line.lower() or 'attribution' in line.lower() for line in context_lines):
-            logger.warning(f"Commentary validation failed: {len(context_lines)} context lines found, session: {session_id}")
+    # ===================== Context Summarization (FAST) ===================== #
+
+    def _summarize_payloads(self, payloads: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Extract key facts from mixed payloads: totals, rankings, select rows.
+        Also applies the Total Management fallback if needed for rankings.
+        """
+        summary: Dict[str, Any] = {
+            "period": "Not reported",
+            "portfolio_ror": 0.0,
+            "benchmark_ror": 0.0,
+            "active_pp": 0.0,
+            "effects": {},  # name → value (pp)
+            "top_contributors": [],
+            "top_detractors": [],
+        }
+
+        # Find totals chunk
+        totals = next((p for p in payloads if p.get("type") == "total"), None)
+        if totals:
+            summary["period"] = totals.get("period", summary["period"])
+            pr = _pct(totals.get("portfolio_total_ror"))
+            br = _pct(totals.get("benchmark_total_ror"))
+            ap = _pp(totals.get("active_total_pp"))
+            if pr is not None: summary["portfolio_ror"] = pr
+            if br is not None: summary["benchmark_ror"] = br
+            if ap is not None: summary["active_pp"] = ap
+
+            # Effects (pp)
+            eff_map = {
+                "Allocation": totals.get("allocation_pp"),
+                "Selection": totals.get("selection_pp"),
+                "FX": totals.get("fx_pp"),
+                "Carry": totals.get("carry_pp"),
+                "Roll": totals.get("roll_pp"),
+                "Price": totals.get("price_pp"),
+                "Total Management": totals.get("total_management_pp"),
+                "Total Attribution": totals.get("total_attribution_pp"),
+            }
+            for k, v in eff_map.items():
+                v = _pp(v)
+                if v is not None:
+                    summary["effects"][k] = v
+
+        # Rankings chunk (prefer by Total Management)
+        ranks = next((p for p in payloads if p.get("type") == "ranking"), None)
+        if ranks:
+            tcs = ranks.get("top_contributors") or []
+            tds = ranks.get("top_detractors") or []
+            def _clean_rank(items):
+                out = []
+                for it in items:
+                    b = it.get("bucket")
+                    v = _pp(it.get("pp"))
+                    if b and v is not None:
+                        out.append({"bucket": str(b), "pp": float(v)})
+                return out
+            summary["top_contributors"] = _clean_rank(tcs)
+            summary["top_detractors"]  = _clean_rank(tds)
+
+        # If rankings empty → recompute from row payloads
+        if not summary["top_contributors"] and not summary["top_detractors"]:
+            rows = [p for p in payloads if p.get("type") == "row"]
+            if rows:
+                # Choose key: total_management → total_attr_pp → sector+issue selection
+                def score(row):
+                    tm = _pp(row.get("total_management"))
+                    if tm is not None:
+                        return tm
+                    ta = _pp(row.get("total_attr_pp"))
+                    if ta is not None:
+                        return ta
+                    ss = _pp(row.get("sector_selection_pp"))
+                    isel = _pp(row.get("issue_selection_pp"))
+                    if ss is not None and isel is not None:
+                        return ss + isel
+                    return None
+
+                scored = []
+                for r in rows:
+                    v = score(r)
+                    if v is not None:
+                        scored.append((r.get("bucket", "Unknown"), v))
+                if scored:
+                    scored.sort(key=lambda x: x[1], reverse=True)
+                    tops = [s for s in scored if s[1] > 0][:3]
+                    bots = [s for s in reversed(scored) if s[1] < 0][:3]
+                    summary["top_contributors"] = [{"bucket": b, "pp": float(v)} for b, v in tops]
+                    summary["top_detractors"]  = [{"bucket": b, "pp": float(v)} for b, v in bots]
+
+        # Guarantee presence of required core fields
+        for k in ["portfolio_ror", "benchmark_ror", "active_pp"]:
+            if summary.get(k) is None:
+                summary[k] = 0.0
+
+        return summary
+
+    # ===================== Fast Generators (LLM prompts) ===================== #
+
+    async def _generate_commentary_fast(self, summary: Dict[str, Any], session_id: str) -> Dict[str, Any]:
+        # Validate core facts
+        if summary.get("portfolio_ror") is None or summary.get("benchmark_ror") is None:
             return {
                 "mode": "commentary",
-                "response": "Unable to generate commentary: No valid attribution data found in the context. Please ensure the attribution file was uploaded and processed successfully, and that the session contains performance attribution data.",
+                "response": "Unable to generate commentary: Not reported in the context.",
                 "session_id": session_id,
                 "context_used": 0,
-                "error": "No valid context provided",
+                "error": "No valid totals found",
             }
-        
-        user_prompt = f"""
-CONTEXT:
-{context}
 
-Generate professional attribution commentary following this structure:
-1) Executive Summary (3-4 sentences)
-2) Total Performance Drivers
-3) Top Contributors/Detractors
-4) Key Risks/Watch Items (if justified by data)
-
-Use one decimal place for pp values and retain +/- signs.
-"""
-        response = await self.ollama.generate_response(user_prompt, system_prompt=self.system_prompt, temperature=0.1)
+        user_prompt = self._prompt_template_fast(summary)
+        response = await self.ollama.generate_response(
+            user_prompt,
+            system_prompt=self.system_prompt + "\n" + self.developer_prompt,
+            temperature=0.1
+        )
         return {
             "mode": "commentary",
             "response": response.get("response", ""),
             "session_id": session_id,
-            "context_used": len(context_lines),
+            "context_used": len(json.dumps(summary)),
             "prompt": user_prompt,
+            "summary": summary,
         }
 
-    async def _generate_qa_response(self, question: str, context: str, session_id: str) -> Dict[str, Any]:
-        # Validate context is not empty or meaningless
-        context_lines = [line.strip() for line in context.split('\n') if line.strip()]
-        if len(context_lines) < 3 or not any('portfolio' in line.lower() or 'return' in line.lower() or 'attribution' in line.lower() for line in context_lines):
-            logger.warning(f"Q&A validation failed: {len(context_lines)} context lines found for question: {question}, session: {session_id}")
-            return {
-                "mode": "qa",
-                "question": question,
-                "response": "Unable to answer question: No valid attribution data found in the context. Please ensure the attribution file was uploaded and processed successfully, and that the session contains performance attribution data.",
-                "session_id": session_id,
-                "context_used": 0,
-                "error": "No valid context provided",
-            }
-        
-        system_prompt = """You are a meticulous attribution Q&A assistant.
-Answer ONLY using the CONTEXT from the user's uploaded document (tables, derived stats, excerpts).
-If the answer is not present in CONTEXT, reply: "The report does not contain that information."
-Be concise and numeric. Use % for returns and pp for attribution."""
-        user_prompt = f"""
-QUESTION: {question}
-
-CONTEXT:
-{context}
-
-RESPONSE RULES:
-- Use only numbers/fields in CONTEXT
-- Rank or sum if asked, else quote exact row values
-- If data insufficient, state it explicitly
-"""
+    async def _generate_qa_fast(self, question: str, summary: Dict[str, Any], session_id: str) -> Dict[str, Any]:
+        system_prompt = (
+            "You are a meticulous attribution Q&A assistant.\n"
+            "Answer ONLY using the summary facts provided by the system. If the answer is not present, reply: "
+            "\"The report does not contain that information.\" Use % for returns and pp for attribution. Be concise."
+        )
+        facts = json.dumps(summary, ensure_ascii=False)
+        user_prompt = f"QUESTION: {question}\nFACTS: {facts}"
         response = await self.ollama.generate_response(user_prompt, system_prompt=system_prompt, temperature=0.0)
         return {
             "mode": "qa",
             "question": question,
             "response": response.get("response", ""),
             "session_id": session_id,
-            "context_used": len(context_lines),
+            "context_used": len(facts),
             "prompt": user_prompt,
+            "summary": summary,
         }
 
-    # --------------------------- Session Utilities -------------------------- #
+    # =========================== Session Utilities =========================== #
 
     async def clear_session(self, session_id: str) -> bool:
         if not self.qdrant:
