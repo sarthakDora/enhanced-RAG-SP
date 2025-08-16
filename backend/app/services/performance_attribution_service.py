@@ -103,10 +103,31 @@ class PerformanceAttributionService:
 
         # Crisp, PM-grade system instruction
         self.system_prompt = (
-            "You are a buy-side performance attribution commentator for an institutional portfolio. "
-            "Audience: portfolio managers and senior analysts. Write concise, evidence-based commentary "
-            "using ONLY provided context. Use % for returns (performance) and pp for attribution effects. "
-            "Do not add macro narrative or assumptions. Tone: crisp and useful."
+            
+            """
+            You are an expert CFA charterholder and quantitative analyst performing attribution analysis.
+            Produce a Brinson–Fachler attribution report in a clear, professional, analytical story style.
+            **No recommendations or criticism or conclusions**
+            Definitions
+            Performance: Portfolio and benchmark returns.
+            Attribution: Decomposition of alpha into Total Effect, Selection Effect, and Allocation Effect.
+            Formulas
+            - Allocation = (Portfolio Weight − Benchmark Weight) × (Benchmark Sector Return − Benchmark Total Return)
+            - Selection = Portfolio Weight × (Portfolio Sector Return − Benchmark Sector Return)
+            - Total Effect = Allocation + Selection
+            - Selection: positive if PR greater than BR; negative if PR lesser than BR (reference PW if provided).
+            - Allocation: positive if PW greater than BW and BR is greater than Benchmark Total Return, or PW lesser than BW and BR is lesser than Benchmark Total Return; negative if PW lesser than BW and BR is greater than Benchmark Total Return or if PW greater than BW and BR is lesser than Benchmark Total Return.
+            
+            Output Rules (STRICT)
+            1) Opening point: use the provided point EXACTLY as the opener (already in OUTPUT TEMPLATE).
+            2) Then write **exactly 200 words** in **bullet points** (each contributor in separate points, then detractors in separate points and other sectors if present).
+            - Mention ALL countries/sectors provided by the user.
+            - For each country/sector, include Total Effect (bps) and driver(s) (selection, allocation, or both) using the given numbers.
+            3) No narratives. No recommendations or criticism or unwanted text.
+            4) **Do not calculate or invent numbers; use ONLY provided values.**
+            5) Do not use "performance" to describe attribution results.
+            6) **Do not include any introductory or framing sentences such as “Here’s the report,” “Below is the commentary,” or similar.
+            """
         )
 
         # Developer guardrails
@@ -115,8 +136,8 @@ class PerformanceAttributionService:
             "- Distinguish performance (%) vs attribution (pp).\n"
             "- Report effects that exist in context: Allocation, Selection (Sector & Issue), FX, Carry, Roll, Price.\n"
             "- If 'Total Management' is missing, define it as Sector Selection + Issue Selection (only if both present).\n"
-            "- Rank top contributors/detractors by Total Management; if missing, use Total Attribution; if still missing, use the fallback formula.\n"
-            "- One decimal for pp values with sign (+/-); returns keep one decimal % if provided.\n"
+            "- Rank top contributors/detractors by Total Management.\n"
+            "- Two decimal places for pp values with sign (+/-); returns keep two decimal places % if provided.\n"
             "- ≤ 180 words; no tables unless necessary.\n"
         )
 
@@ -124,31 +145,178 @@ class PerformanceAttributionService:
 
     # ============================ Prompt Builder ============================ #
 
+    def choose_opening_verb(self, excess_bps: float, nearline_thresh: int = 1) -> str:
+        if abs(excess_bps) <= nearline_thresh:
+            return "was broadly in line"
+        return "outperformed" if excess_bps > 0 else "fell short of"
+ 
+    
+
     def _prompt_template_fast(self, summary: Dict[str, Any]) -> str:
         """
         Small, well-formed prompt for speed. Contains definitions & formulas,
         distilled facts, and strict output format.
         """
         # Build effect line in a consistent order
-        ordered_labels = ["Allocation", "Selection", "FX", "Carry", "Roll", "Price", "Total Management", "Total Attribution"]
+        ordered_labels = ["Allocation", "Selection", "FX", "Carry", "Roll", "Price", "Total Management"]
         eff_lines = []
         for k in ordered_labels:
             if k in summary.get("effects", {}):
-                eff_lines.append(f"{k}: {summary['effects'][k]:+0.1f} pp")
+                eff_lines.append(f"{k}: {summary['effects'][k]:+0.2f} pp")
         effects_str = ", ".join(eff_lines) if eff_lines else "Not reported."
 
-        # Rankings
-        top_text = "Not reported in the context."
-        bot_text = "Not reported in the context."
-        if summary.get("top_contributors"):
-            top_text = ", ".join([f"{x['bucket']} {x['pp']:+0.1f}" for x in summary["top_contributors"]])
-        if summary.get("top_detractors"):
-            bot_text = ", ".join([f"{x['bucket']} {x['pp']:+0.1f}" for x in summary["top_detractors"]])
+        # ------------------ Rankings (UPDATED) ------------------
+        import ast, re
+
+        def _coerce_rows(obj):
+            """Accepts list[dict] or a string that contains {...} dicts; returns list[dict]."""
+            if isinstance(obj, list):
+                return [x for x in obj if isinstance(x, dict)]
+            if isinstance(obj, str):
+                dict_strs = re.findall(r'\{[^{}]*\}', obj)
+                out = []
+                for s in dict_strs:
+                    try:
+                        out.append(ast.literal_eval(s))
+                    except Exception:
+                        pass
+                return out
+            return []
+
+        def _bps(x):
+            try:
+                return int(round(float(x) * 100))
+            except Exception:
+                return 0
+
+        def _pct(x):
+            try:
+                return f"{float(x):0.2f}%"
+            except Exception:
+                return "n/a"
+
+        def _pick_sector(d):
+            return str(d.get("sector") or d.get("bucket") or d.get("name") or "Item")
+
+        # Wording helpers
+        def _pr_vs_br_phrase(diff):
+            # >= +3.0: significantly higher | +0.5..+3: slightly higher | <= -3: lesser than | -3..-0.5: slightly lower | else: in line
+            if diff >= 3.0:
+                return "significantly higher than BR"
+            if diff >= 0.5:
+                return "slightly higher than BR"
+            if diff <= -3.0:
+                return "lesser than BR"
+            if diff <= -0.5:
+                return "slightly lower than BR"
+            return "in line with BR"
+
+        def _bm_vs_sector_phrase(diff):
+            # >= +3: greater than | +0.5..+3: slightly higher | <= -3: lesser than | -3..-0.5: slightly lower | else: omit
+            if diff >= 3.0:
+                return "greater than sector BR"
+            if diff >= 0.5:
+                return "slightly higher than sector BR"
+            if diff <= -3.0:
+                return "lesser than sector BR"
+            if diff <= -0.5:
+                return "slightly lower than sector BR"
+            return None
+
+        def _pw_vs_bw_phrase(diff):
+            # >= +3: significantly higher than | +0.5..+3: slightly higher than | <= -3: lesser than | -3..-0.5: slightly lesser than | else: omit
+            if diff >= 3.0:
+                return "significantly higher than"
+            if diff >= 0.5:
+                return "slightly higher than"
+            if diff <= -3.0:
+                return "lesser than"
+            if diff <= -0.5:
+                return "slightly lesser than"
+            return None
+
+        # Accept both plural/singular keys or string payloads
+        raw_top = summary.get("top_contributors", summary.get("top_contributor"))
+        raw_bot = summary.get("top_detractors", summary.get("top_detractor"))
+        top_rows = _coerce_rows(raw_top)
+        bot_rows = list(reversed(_coerce_rows(raw_bot)))
+
+        # Keys (snake_case per your payload)
+        RK_TOTAL = "total_management"
+        RK_SEL = "issue_selection"
+        RK_ALLOC = "sector_allocation"
+
+        # Overall benchmark total return (for "Bench Mark Total Return vs sector BR")
+        bm_total = summary.get("benchmark_ror", None)
+
+        def _line_for_row(d):
+            sector = _pick_sector(d)
+
+            # Effects in bps
+            total_eff_bps = _bps(d.get(RK_TOTAL, d.get("pp", 0)))
+            sel_bps = _bps(d.get(RK_SEL, 0))
+            alloc_bps = _bps(d.get(RK_ALLOC, 0))
+
+            # PR vs BR
+            pr = d.get("portfolio_ror")
+            br = d.get("benchmark_ror")
+            pr_vs_br = ""
+            if isinstance(pr, (int, float)) and isinstance(br, (int, float)):
+                diff = float(pr) - float(br)
+                pr_vs_br = f"PR {_pr_vs_br_phrase(diff)} ({_pct(pr)} vs {_pct(br)})"
+
+            # Build base (up to Allocation) exactly as requested
+            parts = [
+                f"**{sector}: Total effect {total_eff_bps} bps; ",
+                f"Selection {sel_bps} bps; ",
+                f"{pr_vs_br};"
+            ]
+
+            include_trailing = False
+            if abs(alloc_bps) >= 4:
+                parts.append(f" Allocation {alloc_bps} bps;")
+                include_trailing = True
+
+            # Only include the following if Allocation was included (to match your examples)
+            trailing_bits = []
+            if include_trailing and isinstance(bm_total, (int, float)) and isinstance(br, (int, float)):
+                phr2 = _bm_vs_sector_phrase(float(bm_total) - float(br))
+                if phr2:
+                    trailing_bits.append(f"Bench Mark Total Return {phr2} ({_pct(bm_total)} vs {_pct(br)})")
+
+            pw = d.get("portfolio_weight")
+            bw = d.get("benchmark_weight")
+            if include_trailing and isinstance(pw, (int, float)) and isinstance(bw, (int, float)):
+                wphr = _pw_vs_bw_phrase(float(pw) - float(bw))
+                if wphr:
+                    trailing_bits.append(f"PW is {wphr} BW ({_pct(pw)} vs {_pct(bw)})")
+
+            if trailing_bits:
+                # bench phrase first, then ",  " + PW phrase; end with semicolon
+                parts.append(f" {',  '.join(trailing_bits)};")
+
+            # End line with asterisk (as in your sample)
+            parts.append("*")
+            return "".join(parts)
+
+        # Compose final strings (assumes inputs are already ranked)
+        top_text = "\n".join([_line_for_row(d) for d in top_rows[:3]]) if top_rows else "Not reported in the context."
+        bot_text = "\n".join([_line_for_row(d) for d in bot_rows[:3]]) if bot_rows else "Not reported in the context."
+
 
         # Destructure metrics
         active = summary.get("active_pp")
         port = summary.get("portfolio_ror")
         bench = summary.get("benchmark_ror")
+        effects_list = summary.get("effects",{})
+
+        verb = self.choose_opening_verb(float(active))
+        opening_template = (
+            f'The portfolio {verb} {port:.2f}% against the benchmark’s '
+            f'{bench:.2f}%. This resulted in an alpha of '
+            f'{effects_list["Total Management"]*100:.0f} bps, with {effects_list["Selection"]*100:.0f} bps attributed to issue selection and '
+            f'{effects_list["Allocation"]*100:.0f} bps to sector allocation.'
+        )
 
         # Definitions block (kept compact but explicit)
         defs = (
@@ -159,40 +327,29 @@ class PerformanceAttributionService:
             "- Report only effects provided in context. Do not invent.\n"
         )
 
-        header = f"TASK: Institutional attribution commentary for {summary.get('period','the period')}.\n\n"
-        facts = (
-            "DATA SUMMARY:\n"
-            f"Active: {active:+0.1f} pp | Portfolio: {port:.1f}% | Benchmark: {bench:.1f}%\n"
-            f"Effects: {effects_str}\n\n"
-        )
+        header = f"""OUTPUT TEMPLATE:
+    {opening_template}
 
+
+    Contributors:
+    *
+    *
+
+    Detractors:
+    *
+    *
+    """
+        # Replace the ranks block to match your expected section headings
         ranks = (
-            "RANKINGS:\n"
-            f"Top contributors: {top_text}\n"
-            f"Top detractors: {bot_text}\n\n"
+            "\n\nUSER: \n\nContributors (already ranked):\n"
+            f"{top_text}\n\n"
+            "Detractors (already ranked):\n"
+            f"{bot_text}\n"
         )
+        assistant = """\nNow write the attribution report commentary based on the provided data."""
 
-        fmt = (
-            "OUTPUT (MARKDOWN):\n"
-            "**Executive Summary**\n"
-            "- State active return and portfolio vs benchmark (%).\n"
-            "- Summarize key drivers by effect in pp (only those present).\n"
-            "- Add brief breadth/dispersion if evident.\n\n"
-            "**Total Performance Drivers**\n"
-            "- List effects present with pp values.\n\n"
-            "**Country/Sector-Level Highlights**\n"
-            "- Top contributors (by Total Management, else Total Attribution).\n"
-            "- Top detractors (same rule).\n\n"
-            "**Risks / Watch Items**\n"
-            "- Only if suggested by concentration or effect pattern; else omit.\n\n"
-            "CONSTRAINTS:\n"
-            "- Use one decimal for pp and retain +/- signs.\n"
-            "- Never express attribution in %.\n"
-            "- If any required value is missing, write: 'Not reported in the context.'\n"
-            "- ≤ 180 words.\n"
-        )
+        return header + ranks + assistant
 
-        return header + defs + facts + ranks + fmt
 
     # =========================== Excel Extraction =========================== #
 
@@ -419,7 +576,8 @@ class PerformanceAttributionService:
         elif any(term in columns_str for term in ["country", "region", "currency"]):
             asset_class = "Fixed Income"; attribution_level = "Country"; bucket_patterns = ["country", "region"]
         else:
-            asset_class = "Equity"; attribution_level = "Sector"; bucket_patterns = ["sector"]
+            # Default to Equity/Sector for equity files
+            asset_class = "Equity"; attribution_level = "Sector"; bucket_patterns = ["sector", "gics", "industry"]
 
         # Canonicalize columns
         df_clean = df.copy()
@@ -442,21 +600,25 @@ class PerformanceAttributionService:
         df_clean = df_clean.dropna(subset=[bucket_col])
 
         # Identify effect columns (loose matching, and pp/contribution)
+        # Key attribution columns: sector allocation, issue selection, total management
         effects_map = {
-            "allocation": ["allocation", "alloc", "country_allocation", "sector_allocation"],
-            "sector_selection": ["sector_selection", "sector_select", "sel_sector", "selection_sector"],
-            "issue_selection":  ["issue_selection", "security_selection", "select_issue", "selection_issue"],
+            "allocation": ["allocation_effect", "allocation", "alloc"],
+            "selection": ["selection_effect", "selection", "select"],
             "fx":         ["fx", "currency", "foreign_exchange", "fx_selection"],
             "carry":      ["carry", "yield", "run_yield"],
             "roll":       ["roll", "rolldown", "roll_down"],
             "price":      ["price", "price_return"],
-            "total_mgmt": ["total_management", "total_mgmt", "total_mgmt_pp"],
-            "total_attr": ["total_attr_pp", "total_attribution"],
+            "total_mgmt": ["total_management", "total_mgmt"],
         }
 
         def _find_effect(col_patterns: List[str]) -> Optional[str]:
             for p in col_patterns:
-                cands = [c for c in df_clean.columns if p in c and ("pp" in c or "contribution" in c or c.endswith("_pp"))]
+                # First try to find columns with pp or contribution indicators
+                cands = [c for c in df_clean.columns if p in c and ("pp" in c or "contribution" in c or c.endswith("_pp") or "_contrib" in c)]
+                if cands:
+                    return cands[0]
+                # If no pp/contribution columns found, try exact pattern match for attribution columns
+                cands = [c for c in df_clean.columns if p in c]
                 if cands:
                     return cands[0]
             return None
@@ -468,30 +630,14 @@ class PerformanceAttributionService:
             if c != bucket_col:
                 df_clean[c] = pd.to_numeric(df_clean[c], errors="coerce")
 
-        # Return columns
+        # Return columns - Portfolio ROR (%), Benchmark ROR (%)
         portfolio_col = self._find_column(df_clean.columns, ["portfolio_ror", "portfolio_return", "port_ret"])
         benchmark_col = self._find_column(df_clean.columns, ["benchmark_ror", "benchmark_return", "bench_ret"])
         if portfolio_col and benchmark_col:
             df_clean["active_ror_pp"] = df_clean[portfolio_col] - df_clean[benchmark_col]
 
-        # Total Management fallback = Sector Selection + Issue Selection (if both present)
-        if not effect_cols["total_mgmt"]:
-            if effect_cols["sector_selection"] and effect_cols["issue_selection"]:
-                df_clean["total_management"] = (
-                    df_clean[effect_cols["sector_selection"]].fillna(0.0)
-                    + df_clean[effect_cols["issue_selection"]].fillna(0.0)
-                )
-                effect_cols["total_mgmt"] = "total_management"
-
-        # Total Attribution (if not present)
-        if not effect_cols["total_attr"]:
-            available = [c for c in [effect_cols["allocation"], effect_cols["sector_selection"],
-                                     effect_cols["issue_selection"], effect_cols["fx"],
-                                     effect_cols["carry"], effect_cols["roll"], effect_cols["price"]]
-                         if c]
-            if available:
-                df_clean["total_attr_pp"] = df_clean[available].sum(axis=1, skipna=True)
-                effect_cols["total_attr"] = "total_attr_pp"
+        # Total Management should be present as a column - no fallback needed
+        # Note: Total Management = Allocation Effect + Selection Effect
 
         # Period from filename
         period = self._extract_period_from_filename(file_path)
@@ -545,17 +691,24 @@ class PerformanceAttributionService:
         chunks: List[AttributionChunk] = []
         bucket_col = self._find_bucket_column(df, metadata)
 
-        # Exclude any summary rows labeled "total"
+        # Identify total row if present
+        total_row = None
         df_rows = df.copy()
         if bucket_col in df_rows.columns:
-            df_rows = df_rows[df_rows[bucket_col].astype(str).str.strip().str.lower().ne("total")]
+            mask = df_rows[bucket_col].astype(str).str.strip().str.lower() == "total"
+            if mask.any():
+                total_row = df_rows[mask].iloc[0]
+                df_rows = df_rows[~mask]
 
         # Row chunks
         for _, row in df_rows.iterrows():
             chunks.append(self._build_row_chunk(row, metadata, bucket_col, session_id))
 
-        # Totals chunk
-        chunks.append(self._build_totals_chunk(df_rows, df, metadata, session_id))
+        # Totals chunk: use total row if available, else calculate
+        if total_row is not None:
+            chunks.append(self._build_row_chunk(total_row, metadata, bucket_col, session_id))
+        else:
+            chunks.append(self._build_totals_chunk(df_rows, df, metadata, session_id))
 
         # Rankings chunk (Total Management → Total Attribution → fallback formula)
         chunks.append(self._build_rankings_chunk(df_rows, metadata, bucket_col, session_id))
@@ -579,59 +732,52 @@ class PerformanceAttributionService:
     def _build_row_chunk(self, row: pd.Series, metadata: AttributionMetadata, bucket_col: str, session_id: str) -> AttributionChunk:
         bucket_name = str(row[bucket_col])
 
-        # Returns
-        portfolio_ror = self._safe_get_numeric(row, ["portfolio_ror", "portfolio_return"])
-        benchmark_ror = self._safe_get_numeric(row, ["benchmark_ror", "benchmark_return"])
+        # Returns (ROR is also called as return)
+        portfolio_ror = self._safe_get_numeric(row, ["portfolio_ror", "portfolio_return", "port_ror", "portfolio_%"])
+        benchmark_ror = self._safe_get_numeric(row, ["benchmark_ror", "benchmark_return", "bench_ror", "benchmark_%"])
         active_ror_pp = self._safe_get_numeric(row, ["active_ror_pp"])
         if active_ror_pp is None and (portfolio_ror is not None and benchmark_ror is not None):
             active_ror_pp = portfolio_ror - benchmark_ror
 
-        # Effects
-        allocation_pp = self._safe_get_numeric(row, ["allocation", "allocation_pp", "country_allocation", "sector_allocation"])
-        sector_sel_pp = self._safe_get_numeric(row, ["sector_selection"])
-        issue_sel_pp  = self._safe_get_numeric(row, ["issue_selection", "security_selection"])
+        # Effects based on actual equity columns: Allocation Effect (pp), Selection Effect (pp), Total Management
+        allocation_pp = self._safe_get_numeric(row, ["allocation_effect", "allocation", "alloc"])
+        selection_pp = self._safe_get_numeric(row, ["selection_effect", "selection", "select"])
         fx_pp         = self._safe_get_numeric(row, ["fx", "fx_pp", "currency", "fx_selection"]) if metadata.has_fx else None
         carry_pp      = self._safe_get_numeric(row, ["carry", "carry_pp", "run_yield"]) if metadata.has_carry else None
         roll_pp       = self._safe_get_numeric(row, ["roll", "roll_pp", "rolldown", "roll_down"]) if metadata.has_roll else None
         price_pp      = self._safe_get_numeric(row, ["price", "price_pp", "price_return"]) if metadata.has_price else None
-        total_mgmt_pp = self._safe_get_numeric(row, ["total_management", "total_mgmt_pp"])
-        if total_mgmt_pp is None and sector_sel_pp is not None and issue_sel_pp is not None:
-            total_mgmt_pp = sector_sel_pp + issue_sel_pp
-        total_attr_pp = self._safe_get_numeric(row, ["total_attr_pp", "total_attribution", "total_management"])
+        total_mgmt_pp = self._safe_get_numeric(row, ["total_management", "total_mgmt"])
 
-        # Weights
-        portfolio_wt = self._safe_get_numeric(row, ["portfolio_wt", "portfolio_weight", "portfolio_weight_%"])
-        benchmark_wt = self._safe_get_numeric(row, ["benchmark_wt", "benchmark_weight", "benchmark_weight_%"])
+        # Weights - Portfolio Weight (%), Benchmark Weight (%)
+        portfolio_wt = self._safe_get_numeric(row, ["portfolio_wt", "portfolio_weight", "portfolio_weight_%", "portfolio_weight_pp"])
+        benchmark_wt = self._safe_get_numeric(row, ["benchmark_wt", "benchmark_weight", "benchmark_weight_%", "benchmark_weight_pp"])
         rel_wt_pp = None
         if portfolio_wt is not None and benchmark_wt is not None:
             rel_wt_pp = portfolio_wt - benchmark_wt
 
-        # Text
+        # Text - show numbers in 2 decimal places
         parts = [f"{metadata.period} • {metadata.attribution_level} row: {bucket_name}"]
         if portfolio_ror is not None and benchmark_ror is not None:
-            parts.append(f"Portfolio ROR: {portfolio_ror:.1f}% | Benchmark ROR: {benchmark_ror:.1f}%")
+            parts.append(f"Portfolio ROR: {portfolio_ror}% | Benchmark ROR: {benchmark_ror}%")
             if active_ror_pp is not None:
-                parts.append(f"Active ROR: {active_ror_pp:+.1f} pp")
+                parts.append(f"Active ROR: {active_ror_pp} pp")
 
         eff = []
-        if allocation_pp is not None: eff.append(f"Allocation {allocation_pp:+.1f}")
-        if sector_sel_pp is not None: eff.append(f"Sector Selection {sector_sel_pp:+.1f}")
-        if issue_sel_pp  is not None: eff.append(f"Issue Selection {issue_sel_pp:+.1f}")
-        if fx_pp        is not None: eff.append(f"FX {fx_pp:+.1f}")
-        if carry_pp     is not None: eff.append(f"Carry {carry_pp:+.1f}")
-        if roll_pp      is not None: eff.append(f"Roll {roll_pp:+.1f}")
-        if price_pp     is not None: eff.append(f"Price {price_pp:+.1f}")
+        if allocation_pp is not None: eff.append(f"Allocation Effect {allocation_pp}")
+        if selection_pp is not None: eff.append(f"Selection Effect {selection_pp}")
+        if fx_pp        is not None: eff.append(f"FX {fx_pp}")
+        if carry_pp     is not None: eff.append(f"Carry {carry_pp}")
+        if roll_pp      is not None: eff.append(f"Roll {roll_pp}")
+        if price_pp     is not None: eff.append(f"Price {price_pp}")
         if eff: parts.append("Attribution effects (pp): " + ", ".join(eff))
 
         if total_mgmt_pp is not None:
-            parts.append(f"Total Management: {total_mgmt_pp:+.1f} pp")
-        if total_attr_pp is not None and (total_mgmt_pp is None or abs(total_attr_pp - total_mgmt_pp) > 1e-9):
-            parts.append(f"Total Attribution: {total_attr_pp:+.1f} pp")
+            parts.append(f"Total Management: {total_mgmt_pp} pp")
 
         if portfolio_wt is not None and benchmark_wt is not None:
-            parts.append(f"Weights: Portfolio {portfolio_wt:.1f}%, Benchmark {benchmark_wt:.1f}%")
+            parts.append(f"Weights: Portfolio {portfolio_wt}%, Benchmark {benchmark_wt}%")
             if rel_wt_pp is not None:
-                parts.append(f"(Rel {rel_wt_pp:+.1f} pp)")
+                parts.append(f"(Rel {rel_wt_pp} pp)")
 
         text = " | ".join(parts)
 
@@ -647,15 +793,13 @@ class PerformanceAttributionService:
             "portfolio_ror": _none_if_nan(portfolio_ror),
             "benchmark_ror": _none_if_nan(benchmark_ror),
             "active_ror_pp": _none_if_nan(active_ror_pp),
-            "allocation_pp": _none_if_nan(allocation_pp),
-            "sector_selection_pp": _none_if_nan(sector_sel_pp),
-            "issue_selection_pp": _none_if_nan(issue_sel_pp),
+            "allocation_effect_pp": _none_if_nan(allocation_pp),
+            "selection_effect_pp": _none_if_nan(selection_pp),
             "fx_pp": _none_if_nan(fx_pp),
             "carry_pp": _none_if_nan(carry_pp),
             "roll_pp": _none_if_nan(roll_pp),
             "price_pp": _none_if_nan(price_pp),
             "total_management": _none_if_nan(total_mgmt_pp),
-            "total_attr_pp": _none_if_nan(total_attr_pp),
             "portfolio_weight": _none_if_nan(portfolio_wt),
             "benchmark_weight": _none_if_nan(benchmark_wt),
             "relative_weight_pp": _none_if_nan(rel_wt_pp),
@@ -683,8 +827,10 @@ class PerformanceAttributionService:
             b_r = pd.to_numeric(df_rows[bench_r], errors="coerce")
             pw_sum = p_w.dropna().sum()
             bw_sum = b_w.dropna().sum()
-            portfolio_total = (p_r * p_w).sum() / pw_sum if pw_sum else np.nan
-            benchmark_total = (b_r * b_w).sum() / bw_sum if bw_sum else np.nan
+            # portfolio_total = (p_r * p_w).sum() / pw_sum if pw_sum else np.nan
+            portfolio_total =  p_r.sum()
+            # benchmark_total = (b_r * b_w).sum() / bw_sum if bw_sum else np.nan
+            benchmark_total = b_r.sum()
 
         # effects sum (pp)
         def sum_if(col_patterns: List[str]) -> Optional[float]:
@@ -693,27 +839,15 @@ class PerformanceAttributionService:
                 return None
             return float(pd.to_numeric(df_rows[col], errors="coerce").fillna(0).sum())
 
-        allocation_total = sum_if(["allocation", "allocation_effect", "country_allocation", "sector_allocation"])
-        sector_sel_total = sum_if(["sector_selection"])
-        issue_sel_total  = sum_if(["issue_selection", "security_selection"])
-        selection_total  = None
-        if sector_sel_total is not None and issue_sel_total is not None:
-            selection_total = sector_sel_total + issue_sel_total
+        allocation_total = sum_if(["allocation_effect", "allocation", "alloc"])
+        selection_total = sum_if(["selection_effect", "selection", "select"])
 
         fx_total    = sum_if(["fx", "currency", "fx_selection"]) if metadata.has_fx else None
         carry_total = sum_if(["carry", "run_yield"]) if metadata.has_carry else None
         roll_total  = sum_if(["roll", "rolldown", "roll_down"]) if metadata.has_roll else None
         price_total = sum_if(["price", "price_return"]) if metadata.has_price else None
 
-        total_mgmt_total = sum_if(["total_management", "total_mgmt_pp"])
-        if total_mgmt_total is None and selection_total is not None:
-            total_mgmt_total = selection_total
-
-        total_attr_total = sum_if(["total_attr_pp", "total_attribution"])
-        if total_attr_total is None:
-            # last resort
-            comps = [x for x in [allocation_total, selection_total, fx_total, carry_total, roll_total, price_total] if x is not None]
-            total_attr_total = sum(comps) if comps else None
+        total_mgmt_total = sum_if(["total_management", "total_mgmt"])
 
         active_pp = None
         if portfolio_total is not None and benchmark_total is not None and not (pd.isna(portfolio_total) or pd.isna(benchmark_total)):
@@ -721,17 +855,16 @@ class PerformanceAttributionService:
 
         lines = [f"{metadata.period} • TOTAL"]
         if portfolio_total is not None and benchmark_total is not None and not (pd.isna(portfolio_total) or pd.isna(benchmark_total)):
-            lines.append(f"Portfolio {portfolio_total:.1f}% vs Benchmark {benchmark_total:.1f}% → Active {active_pp:+.1f} pp")
+            lines.append(f"Portfolio {portfolio_total}% vs Benchmark {benchmark_total}% → Active {active_pp} pp")
 
         breakdown = []
-        if allocation_total is not None: breakdown.append(f"Allocation {allocation_total:+.1f}")
-        if selection_total  is not None: breakdown.append(f"Selection {selection_total:+.1f}")
-        if fx_total         is not None: breakdown.append(f"FX {fx_total:+.1f}")
-        if carry_total      is not None: breakdown.append(f"Carry {carry_total:+.1f}")
-        if roll_total       is not None: breakdown.append(f"Roll {roll_total:+.1f}")
-        if price_total      is not None: breakdown.append(f"Price {price_total:+.1f}")
-        if total_mgmt_total is not None: breakdown.append(f"Total Management {total_mgmt_total:+.1f}")
-        if total_attr_total is not None: breakdown.append(f"Total Attribution {total_attr_total:+.1f}")
+        if allocation_total is not None: breakdown.append(f"Allocation Effect {allocation_total}")
+        if selection_total  is not None: breakdown.append(f"Selection Effect {selection_total}")
+        if fx_total         is not None: breakdown.append(f"FX {fx_total}")
+        if carry_total      is not None: breakdown.append(f"Carry {carry_total}")
+        if roll_total       is not None: breakdown.append(f"Roll {roll_total}")
+        if price_total      is not None: breakdown.append(f"Price {price_total}")
+        if total_mgmt_total is not None: breakdown.append(f"Total Management {total_mgmt_total}")
         if breakdown:
             lines.append("Attribution breakdown (pp): " + ", ".join(breakdown))
         text = "\n".join(lines)
@@ -746,34 +879,34 @@ class PerformanceAttributionService:
             "portfolio_total_ror": _none_if_nan(None if portfolio_total is None else float(portfolio_total)),
             "benchmark_total_ror": _none_if_nan(None if benchmark_total is None else float(benchmark_total)),
             "active_total_pp": _none_if_nan(None if active_pp is None else float(active_pp)),
-            "allocation_pp": _none_if_nan(allocation_total),
-            "selection_pp": _none_if_nan(selection_total),
+            "allocation_effect_pp": _none_if_nan(allocation_total),
+            "selection_effect_pp": _none_if_nan(selection_total),
             "fx_pp": _none_if_nan(fx_total),
             "carry_pp": _none_if_nan(carry_total),
             "roll_pp": _none_if_nan(roll_total),
             "price_pp": _none_if_nan(price_total),
             "total_management_pp": _none_if_nan(total_mgmt_total),
-            "total_attribution_pp": _none_if_nan(total_attr_total),
         }
         return AttributionChunk(str(uuid.uuid4()), "total", text, payload)
 
     def _build_rankings_chunk(self, df_rows: pd.DataFrame, metadata: AttributionMetadata, bucket_col: str, session_id: str) -> AttributionChunk:
-        # Preferred rank key: Total Management → Total Attribution → fallback: sector+issue selection
+        # Use Total Management for ranking (it should be present in equity files)
         rank_key = None
-        for key in ["total_management", "total_attr_pp"]:
+        for key in ["total_management", "total_mgmt"]:
             if key in df_rows.columns:
                 rank_key = key
                 break
         if rank_key is None:
-            sector_col = "sector_selection" if "sector_selection" in df_rows.columns else None
-            issue_col  = "issue_selection" if "issue_selection" in df_rows.columns else None
-            if sector_col and issue_col:
+            # Fallback: use allocation + selection if both present
+            alloc_col = "allocation_effect" if "allocation_effect" in df_rows.columns else None
+            sel_col  = "selection_effect" if "selection_effect" in df_rows.columns else None
+            if alloc_col and sel_col:
                 df_rows = df_rows.copy()
-                df_rows["__fallback_rank__"] = df_rows[sector_col].fillna(0.0) + df_rows[issue_col].fillna(0.0)
+                df_rows["__fallback_rank__"] = df_rows[alloc_col].fillna(0.0) + df_rows[sel_col].fillna(0.0)
                 rank_key = "__fallback_rank__"
 
         if rank_key is None:
-            text = f"{metadata.period} • Rankings: No total management/attribution data available"
+            text = f"{metadata.period} • Rankings: No total management data available"
             payload = {"type": "ranking", "session_id": session_id, "rank_key": None, "chunk_id": "ranking_no_data"}
             return AttributionChunk(str(uuid.uuid4()), "ranking", text, payload)
 
@@ -782,29 +915,35 @@ class PerformanceAttributionService:
         top_contrib, top_detract = [], []
         for _, r in df_sorted.head(3).iterrows():
             if r[rank_key] > 0:
-                top_contrib.append({"bucket": str(r[bucket_col]), "pp": float(r[rank_key])})
+                contrib = {col: r[col] for col in df_sorted.columns}
+                contrib["bucket"] = str(r[bucket_col])
+                contrib["pp"] = float(r[rank_key])
+                top_contrib.append(contrib)
         for _, r in df_sorted.tail(3).iterrows():
             if r[rank_key] < 0:
-                top_detract.append({"bucket": str(r[bucket_col]), "pp": float(r[rank_key])})
+                detract = {col: r[col] for col in df_sorted.columns}
+                detract["bucket"] = str(r[bucket_col])
+                detract["pp"] = float(r[rank_key])
+                top_detract.append(detract)
 
-        label = "Total Management" if rank_key in ["total_management", "__fallback_rank__"] else "Total Attribution"
+        label = "Total Management"
         text_parts = [f"{metadata.period} • Rankings by {label} (pp)"]
         if top_contrib:
-            text_parts.append("Top: " + ", ".join([f"{t['bucket']} {t['pp']:+.1f}" for t in top_contrib]))
+            text_parts.append("Top: " + ", ".join([str(t) for t in top_contrib]))
         if top_detract:
-            text_parts.append("Bottom: " + ", ".join([f"{t['bucket']} {t['pp']:+.1f}" for t in top_detract]))
+            text_parts.append("Bottom: " + ", ".join([str(t) for t in top_detract]))
         text = "\n".join(text_parts)
 
         payload = {
             "type": "ranking",
             "session_id": session_id,
-            "rank_key": "total_management" if rank_key in ["total_management", "__fallback_rank__"] else "total_attr_pp",
+            "rank_key": "total_management",
             "top_contributors": _json_sanitize(top_contrib),
             "top_detractors": _json_sanitize(top_detract),
             "asset_class": metadata.asset_class,
             "level": metadata.attribution_level,
             "period": metadata.period,
-            "chunk_id": "ranking_total_management" if rank_key in ["total_management", "__fallback_rank__"] else "ranking_total_attr_pp",
+            "chunk_id": "ranking_total_management",
         }
         return AttributionChunk(str(uuid.uuid4()), "ranking", text, payload)
 
@@ -1006,9 +1145,10 @@ class PerformanceAttributionService:
 
             payloads = [r.payload for r in (search_results or [])]
 
+        
         # Summarize payloads → compact facts for fast prompting
         summary = self._summarize_payloads(payloads)
-
+        print(summary)
         if mode == "commentary":
             return await self._generate_commentary_fast(summary, session_id)
         else:
@@ -1036,29 +1176,37 @@ class PerformanceAttributionService:
             "effects": {},  # name → value (pp)
             "top_contributors": [],
             "top_detractors": [],
+            "total_management":0.0
         }
 
-        # Find totals chunk
+
+        # Find totals chunk (prefer type=="total", else use chunk with bucket=="total")
         totals = next((p for p in payloads if p.get("type") == "total"), None)
+        if not totals:
+            # Fallback: look for a chunk with bucket=="total" (case-insensitive)
+            totals = next((p for p in payloads if str(p.get("bucket", "")).strip().lower() == "total"), None)
+
+        
+
         if totals:
             summary["period"] = totals.get("period", summary["period"])
-            pr = _pct(totals.get("portfolio_total_ror"))
-            br = _pct(totals.get("benchmark_total_ror"))
-            ap = _pp(totals.get("active_total_pp"))
+            # Try both possible key names for total values
+            pr = _pct(totals.get("portfolio_total_ror") or totals.get("portfolio_ror"))
+            br = _pct(totals.get("benchmark_total_ror") or totals.get("benchmark_ror"))
+            ap = _pp(totals.get("active_total_pp") or totals.get("active_ror_pp"))
             if pr is not None: summary["portfolio_ror"] = pr
             if br is not None: summary["benchmark_ror"] = br
             if ap is not None: summary["active_pp"] = ap
 
             # Effects (pp)
             eff_map = {
-                "Allocation": totals.get("allocation_pp"),
-                "Selection": totals.get("selection_pp"),
+                "Allocation": totals.get("allocation_effect_pp"),
+                "Selection": totals.get("selection_effect_pp"),
                 "FX": totals.get("fx_pp"),
                 "Carry": totals.get("carry_pp"),
                 "Roll": totals.get("roll_pp"),
                 "Price": totals.get("price_pp"),
-                "Total Management": totals.get("total_management_pp"),
-                "Total Attribution": totals.get("total_attribution_pp"),
+                "Total Management": totals.get("total_management"),
             }
             for k, v in eff_map.items():
                 v = _pp(v)
@@ -1070,33 +1218,24 @@ class PerformanceAttributionService:
         if ranks:
             tcs = ranks.get("top_contributors") or []
             tds = ranks.get("top_detractors") or []
-            def _clean_rank(items):
-                out = []
-                for it in items:
-                    b = it.get("bucket")
-                    v = _pp(it.get("pp"))
-                    if b and v is not None:
-                        out.append({"bucket": str(b), "pp": float(v)})
-                return out
-            summary["top_contributors"] = _clean_rank(tcs)
-            summary["top_detractors"]  = _clean_rank(tds)
+            # Directly assign the full dicts from ranking chunk to summary
+            summary["top_contributors"] = [dict(it) for it in tcs]
+            summary["top_detractors"]  = [dict(it) for it in tds]
 
         # If rankings empty → recompute from row payloads
         if not summary["top_contributors"] and not summary["top_detractors"]:
             rows = [p for p in payloads if p.get("type") == "row"]
             if rows:
-                # Choose key: total_management → total_attr_pp → sector+issue selection
+                # Use total_management for scoring
                 def score(row):
                     tm = _pp(row.get("total_management"))
                     if tm is not None:
                         return tm
-                    ta = _pp(row.get("total_attr_pp"))
-                    if ta is not None:
-                        return ta
-                    ss = _pp(row.get("sector_selection_pp"))
-                    isel = _pp(row.get("issue_selection_pp"))
-                    if ss is not None and isel is not None:
-                        return ss + isel
+                    # Fallback: allocation + selection
+                    alloc = _pp(row.get("allocation_effect_pp"))
+                    sel = _pp(row.get("selection_effect_pp"))
+                    if alloc is not None and sel is not None:
+                        return alloc + sel
                     return None
 
                 scored = []
@@ -1132,9 +1271,12 @@ class PerformanceAttributionService:
             }
 
         user_prompt = self._prompt_template_fast(summary)
+
+        
+        # system_prompt=self.system_prompt + "\n" + self.developer_prompt,
         response = await self.ollama.generate_response(
             user_prompt,
-            system_prompt=self.system_prompt + "\n" + self.developer_prompt,
+            system_prompt=self.system_prompt,
             temperature=0.1
         )
         return {
@@ -1147,14 +1289,46 @@ class PerformanceAttributionService:
         }
 
     async def _generate_qa_fast(self, question: str, summary: Dict[str, Any], session_id: str) -> Dict[str, Any]:
+#         system_prompt = (
+#             "You are a meticulous attribution CFA charterholder expert Q&A assistant performing attribtuion analysis.\n"
+#             "Produce numbers in 2 decimals\n"
+#             """Performance: Portfolio and benchmark returns.
+# Attribution: Decomposition of alpha into Total Effect, Selection Effect, and Allocation Effect.
+# Formulas
+# - Allocation = (Portfolio Weight − Benchmark Weight) × (Benchmark Sector Return − Benchmark Total Return)
+# - Selection = Portfolio Weight × (Portfolio Sector Return − Benchmark Sector Return)
+# - Total Effect = Allocation + Selection
+# - Selection: positive if PR greater than BR; negative if PR lesser than BR (reference PW if provided).
+# - Allocation: positive if PW greater than BW and BR is greater than Benchmark Total Return, or PW lesser than BW and BR is lesser than Benchmark Total Return; negative if PW lesser than BW and BR is greater than Benchmark Total Return or if PW greater than BW and BR is lesser than Benchmark Total Return."""
+#             "Answer ONLY using the summary facts provided by the system. If the answer is not present, reply: "
+#             "\"The report does not contain that information.\" Use % for returns and total management for attribution. Be concise."
+            
+#         )
         system_prompt = (
-            "You are a meticulous attribution Q&A assistant.\n"
-            "Answer ONLY using the summary facts provided by the system. If the answer is not present, reply: "
-            "\"The report does not contain that information.\" Use % for returns and pp for attribution. Be concise."
+"""SYSTEM:
+You are a CFA charterholder-level attribution analysis assistant. Your role is to answer questions based ONLY on the provided FACTS. If the answer is not in the FACTS, respond: "The report does not contain that information."
+
+Guidelines:
+- Be concise and precise.
+- Show numbers with 2 decimal places.
+- Use % for returns.
+- Use "Total Management" for attribution totals.
+- Do NOT use external knowledge.
+
+Attribution Framework:
+- Allocation = (Portfolio Weight − Benchmark Weight) × (Benchmark Sector Return − Benchmark Total Return)
+- Selection = Portfolio Weight × (Portfolio Sector Return − Benchmark Sector Return)
+- Total Effect = Allocation + Selection
+
+Interpretation:
+- Selection: Positive if Portfolio Return > Benchmark Return; negative otherwise.
+- Allocation: Positive if PW > BW and BR > Benchmark Total Return, or PW < BW and BR < Benchmark Total Return; negative otherwise."""
         )
         facts = json.dumps(summary, ensure_ascii=False)
-        user_prompt = f"QUESTION: {question}\nFACTS: {facts}"
-        response = await self.ollama.generate_response(user_prompt, system_prompt=system_prompt, temperature=0.0)
+        user_prompt = f"QUESTION: \n\n{question}\n\nFACTS: \n\n{facts}"
+        print("**********user prompt")
+        print(user_prompt)
+        response = await self.ollama.generate_response(user_prompt, system_prompt=system_prompt, temperature=0.1)
         return {
             "mode": "qa",
             "question": question,

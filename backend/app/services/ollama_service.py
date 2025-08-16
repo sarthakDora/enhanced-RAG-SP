@@ -145,7 +145,7 @@ class OllamaService:
             
             # Build the full prompt
             full_prompt = self._build_prompt(prompt, context, system_prompt)
-            
+            print(full_prompt)
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(
                     f"{self.base_url}/api/generate",
@@ -158,7 +158,7 @@ class OllamaService:
                             "num_predict": max_tokens,
                             "top_k": 40,
                             "top_p": 0.9,
-                            "repeat_penalty": 1.1
+                            "repeat_penalty": 1.12
                         }
                     }
                 )
@@ -269,13 +269,15 @@ When analyzing financial data:
         else:
             prompt_parts.append(f"SYSTEM: {default_system_prompt}")
         
-        # Add context if provided
-        if context:
-            prompt_parts.append(f"CONTEXT: Based on the following financial documents and data:\n{context}")
+        # # Add context if provided
+        # if context:
+        #     prompt_parts.append(f"CONTEXT: Based on the following financial documents and data:\n{context}")
         
         # Add user question
-        prompt_parts.append(f"USER: {user_prompt}")
-        prompt_parts.append("ASSISTANT:")
+        # prompt_parts.append(f"USER: {user_prompt}")
+        # prompt_parts.append("ASSISTANT:")
+        prompt_parts.append(f"{user_prompt}")
+        # prompt_parts.append("ASSISTANT:")
         
         return "\n\n".join(prompt_parts)
 
