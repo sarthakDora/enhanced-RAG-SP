@@ -157,7 +157,6 @@ class PerformanceAttributionService:
         Small, well-formed prompt for speed. Contains definitions & formulas,
         distilled facts, and strict output format.
         """
-        print(summary)
         # Build effect line in a consistent order
         ordered_labels = ["Allocation", "Selection", "FX", "Carry", "Roll", "Price", "Total Management"]
         eff_lines = []
@@ -304,11 +303,6 @@ class PerformanceAttributionService:
         top_text = "\n".join([_line_for_row(d) for d in top_rows[:3]]) if top_rows else "Not reported in the context."
         bot_text = "\n".join([_line_for_row(d) for d in bot_rows[:3]]) if bot_rows else "Not reported in the context."
 
-        print("***************top text")
-        print(top_text)
-
-        print("***************bottom text")
-        print(bot_text)
 
         # Destructure metrics
         active = summary.get("active_pp")
@@ -1154,7 +1148,7 @@ class PerformanceAttributionService:
         
         # Summarize payloads → compact facts for fast prompting
         summary = self._summarize_payloads(payloads)
-        
+        print(summary)
         if mode == "commentary":
             return await self._generate_commentary_fast(summary, session_id)
         else:
@@ -1295,14 +1289,46 @@ class PerformanceAttributionService:
         }
 
     async def _generate_qa_fast(self, question: str, summary: Dict[str, Any], session_id: str) -> Dict[str, Any]:
+#         system_prompt = (
+#             "You are a meticulous attribution CFA charterholder expert Q&A assistant performing attribtuion analysis.\n"
+#             "Produce numbers in 2 decimals\n"
+#             """Performance: Portfolio and benchmark returns.
+# Attribution: Decomposition of alpha into Total Effect, Selection Effect, and Allocation Effect.
+# Formulas
+# - Allocation = (Portfolio Weight − Benchmark Weight) × (Benchmark Sector Return − Benchmark Total Return)
+# - Selection = Portfolio Weight × (Portfolio Sector Return − Benchmark Sector Return)
+# - Total Effect = Allocation + Selection
+# - Selection: positive if PR greater than BR; negative if PR lesser than BR (reference PW if provided).
+# - Allocation: positive if PW greater than BW and BR is greater than Benchmark Total Return, or PW lesser than BW and BR is lesser than Benchmark Total Return; negative if PW lesser than BW and BR is greater than Benchmark Total Return or if PW greater than BW and BR is lesser than Benchmark Total Return."""
+#             "Answer ONLY using the summary facts provided by the system. If the answer is not present, reply: "
+#             "\"The report does not contain that information.\" Use % for returns and total management for attribution. Be concise."
+            
+#         )
         system_prompt = (
-            "You are a meticulous attribution Q&A assistant.\n"
-            "Answer ONLY using the summary facts provided by the system. If the answer is not present, reply: "
-            "\"The report does not contain that information.\" Use % for returns and pp for attribution. Be concise."
+"""SYSTEM:
+You are a CFA charterholder-level attribution analysis assistant. Your role is to answer questions based ONLY on the provided FACTS. If the answer is not in the FACTS, respond: "The report does not contain that information."
+
+Guidelines:
+- Be concise and precise.
+- Show numbers with 2 decimal places.
+- Use % for returns.
+- Use "Total Management" for attribution totals.
+- Do NOT use external knowledge.
+
+Attribution Framework:
+- Allocation = (Portfolio Weight − Benchmark Weight) × (Benchmark Sector Return − Benchmark Total Return)
+- Selection = Portfolio Weight × (Portfolio Sector Return − Benchmark Sector Return)
+- Total Effect = Allocation + Selection
+
+Interpretation:
+- Selection: Positive if Portfolio Return > Benchmark Return; negative otherwise.
+- Allocation: Positive if PW > BW and BR > Benchmark Total Return, or PW < BW and BR < Benchmark Total Return; negative otherwise."""
         )
         facts = json.dumps(summary, ensure_ascii=False)
-        user_prompt = f"QUESTION: {question}\nFACTS: {facts}"
-        response = await self.ollama.generate_response(user_prompt, system_prompt=system_prompt, temperature=0.0)
+        user_prompt = f"QUESTION: \n\n{question}\n\nFACTS: \n\n{facts}"
+        print("**********user prompt")
+        print(user_prompt)
+        response = await self.ollama.generate_response(user_prompt, system_prompt=system_prompt, temperature=0.1)
         return {
             "mode": "qa",
             "question": question,
