@@ -139,7 +139,7 @@ import { ChatSettingsDialogComponent } from './chat-settings-dialog.component';
           <div *ngIf="messages.length === 0" class="welcome-message glass-card slide-up">
             <div class="welcome-content">
               <mat-icon class="welcome-icon">smart_toy</mat-icon>
-              <h3 class="gradient-text">Welcome to Enhanced RAG</h3>
+              <h3 class="gradient-text">Welcome to VBAM RAG</h3>
               <p>I'm your financial AI assistant. I can help you analyze financial documents, reports, and data. Ask me anything about your uploaded documents!</p>
               
               <div class="quick-actions">
