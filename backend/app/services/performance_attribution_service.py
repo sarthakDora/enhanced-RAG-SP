@@ -103,10 +103,31 @@ class PerformanceAttributionService:
 
         # Crisp, PM-grade system instruction
         self.system_prompt = (
-            "You are a buy-side performance attribution commentator for an institutional portfolio. "
-            "Audience: portfolio managers and senior analysts. Write concise, evidence-based commentary "
-            "using ONLY provided context. Use % for returns (performance) and pp for attribution effects. "
-            "Do not add macro narrative or assumptions. Tone: crisp and useful."
+            
+            """
+            You are an expert CFA charterholder and quantitative analyst performing attribution analysis.
+            Produce a Brinson–Fachler attribution report in a clear, professional, analytical story style.
+            **No recommendations or criticism or conclusions**
+            Definitions
+            Performance: Portfolio and benchmark returns.
+            Attribution: Decomposition of alpha into Total Effect, Selection Effect, and Allocation Effect.
+            Formulas
+            - Allocation = (Portfolio Weight − Benchmark Weight) × (Benchmark Sector Return − Benchmark Total Return)
+            - Selection = Portfolio Weight × (Portfolio Sector Return − Benchmark Sector Return)
+            - Total Effect = Allocation + Selection
+            - Selection: positive if PR greater than BR; negative if PR lesser than BR (reference PW if provided).
+            - Allocation: positive if PW greater than BW and BR is greater than Benchmark Total Return, or PW lesser than BW and BR is lesser than Benchmark Total Return; negative if PW lesser than BW and BR is greater than Benchmark Total Return or if PW greater than BW and BR is lesser than Benchmark Total Return.
+            
+            Output Rules (STRICT)
+            1) Opening point: use the provided point EXACTLY as the opener (already in OUTPUT TEMPLATE).
+            2) Then write **exactly 200 words** in **bullet points** (each contributor in separate points, then detractors in separate points and other sectors if present).
+            - Mention ALL countries/sectors provided by the user.
+            - For each country/sector, include Total Effect (bps) and driver(s) (selection, allocation, or both) using the given numbers.
+            3) No narratives. No recommendations or criticism or unwanted text.
+            4) **Do not calculate or invent numbers; use ONLY provided values.**
+            5) Do not use "performance" to describe attribution results.
+            6) **Do not include any introductory or framing sentences such as “Here’s the report,” “Below is the commentary,” or similar.
+            """
         )
 
         # Developer guardrails
@@ -124,11 +145,19 @@ class PerformanceAttributionService:
 
     # ============================ Prompt Builder ============================ #
 
+    def choose_opening_verb(self, excess_bps: float, nearline_thresh: int = 1) -> str:
+        if abs(excess_bps) <= nearline_thresh:
+            return "was broadly in line"
+        return "outperformed" if excess_bps > 0 else "fell short of"
+ 
+    
+
     def _prompt_template_fast(self, summary: Dict[str, Any]) -> str:
         """
         Small, well-formed prompt for speed. Contains definitions & formulas,
         distilled facts, and strict output format.
         """
+        print(summary)
         # Build effect line in a consistent order
         ordered_labels = ["Allocation", "Selection", "FX", "Carry", "Roll", "Price", "Total Management"]
         eff_lines = []
@@ -137,18 +166,163 @@ class PerformanceAttributionService:
                 eff_lines.append(f"{k}: {summary['effects'][k]:+0.2f} pp")
         effects_str = ", ".join(eff_lines) if eff_lines else "Not reported."
 
-        # Rankings
-        top_text = "Not reported in the context."
-        bot_text = "Not reported in the context."
-        if summary.get("top_contributors"):
-            top_text = ", ".join([f"{x['bucket']} {x['pp']:+0.2f}" for x in summary["top_contributors"]])
-        if summary.get("top_detractors"):
-            bot_text = ", ".join([f"{x['bucket']} {x['pp']:+0.2f}" for x in summary["top_detractors"]])
+        # ------------------ Rankings (UPDATED) ------------------
+        import ast, re
+
+        def _coerce_rows(obj):
+            """Accepts list[dict] or a string that contains {...} dicts; returns list[dict]."""
+            if isinstance(obj, list):
+                return [x for x in obj if isinstance(x, dict)]
+            if isinstance(obj, str):
+                dict_strs = re.findall(r'\{[^{}]*\}', obj)
+                out = []
+                for s in dict_strs:
+                    try:
+                        out.append(ast.literal_eval(s))
+                    except Exception:
+                        pass
+                return out
+            return []
+
+        def _bps(x):
+            try:
+                return int(round(float(x) * 100))
+            except Exception:
+                return 0
+
+        def _pct(x):
+            try:
+                return f"{float(x):0.2f}%"
+            except Exception:
+                return "n/a"
+
+        def _pick_sector(d):
+            return str(d.get("sector") or d.get("bucket") or d.get("name") or "Item")
+
+        # Wording helpers
+        def _pr_vs_br_phrase(diff):
+            # >= +3.0: significantly higher | +0.5..+3: slightly higher | <= -3: lesser than | -3..-0.5: slightly lower | else: in line
+            if diff >= 3.0:
+                return "significantly higher than BR"
+            if diff >= 0.5:
+                return "slightly higher than BR"
+            if diff <= -3.0:
+                return "lesser than BR"
+            if diff <= -0.5:
+                return "slightly lower than BR"
+            return "in line with BR"
+
+        def _bm_vs_sector_phrase(diff):
+            # >= +3: greater than | +0.5..+3: slightly higher | <= -3: lesser than | -3..-0.5: slightly lower | else: omit
+            if diff >= 3.0:
+                return "greater than sector BR"
+            if diff >= 0.5:
+                return "slightly higher than sector BR"
+            if diff <= -3.0:
+                return "lesser than sector BR"
+            if diff <= -0.5:
+                return "slightly lower than sector BR"
+            return None
+
+        def _pw_vs_bw_phrase(diff):
+            # >= +3: significantly higher than | +0.5..+3: slightly higher than | <= -3: lesser than | -3..-0.5: slightly lesser than | else: omit
+            if diff >= 3.0:
+                return "significantly higher than"
+            if diff >= 0.5:
+                return "slightly higher than"
+            if diff <= -3.0:
+                return "lesser than"
+            if diff <= -0.5:
+                return "slightly lesser than"
+            return None
+
+        # Accept both plural/singular keys or string payloads
+        raw_top = summary.get("top_contributors", summary.get("top_contributor"))
+        raw_bot = summary.get("top_detractors", summary.get("top_detractor"))
+        top_rows = _coerce_rows(raw_top)
+        bot_rows = list(reversed(_coerce_rows(raw_bot)))
+
+        # Keys (snake_case per your payload)
+        RK_TOTAL = "total_management"
+        RK_SEL = "issue_selection"
+        RK_ALLOC = "sector_allocation"
+
+        # Overall benchmark total return (for "Bench Mark Total Return vs sector BR")
+        bm_total = summary.get("benchmark_ror", None)
+
+        def _line_for_row(d):
+            sector = _pick_sector(d)
+
+            # Effects in bps
+            total_eff_bps = _bps(d.get(RK_TOTAL, d.get("pp", 0)))
+            sel_bps = _bps(d.get(RK_SEL, 0))
+            alloc_bps = _bps(d.get(RK_ALLOC, 0))
+
+            # PR vs BR
+            pr = d.get("portfolio_ror")
+            br = d.get("benchmark_ror")
+            pr_vs_br = ""
+            if isinstance(pr, (int, float)) and isinstance(br, (int, float)):
+                diff = float(pr) - float(br)
+                pr_vs_br = f"PR {_pr_vs_br_phrase(diff)} ({_pct(pr)} vs {_pct(br)})"
+
+            # Build base (up to Allocation) exactly as requested
+            parts = [
+                f"**{sector}: Total effect {total_eff_bps} bps; ",
+                f"Selection {sel_bps} bps; ",
+                f"{pr_vs_br};"
+            ]
+
+            include_trailing = False
+            if abs(alloc_bps) >= 4:
+                parts.append(f" Allocation {alloc_bps} bps;")
+                include_trailing = True
+
+            # Only include the following if Allocation was included (to match your examples)
+            trailing_bits = []
+            if include_trailing and isinstance(bm_total, (int, float)) and isinstance(br, (int, float)):
+                phr2 = _bm_vs_sector_phrase(float(bm_total) - float(br))
+                if phr2:
+                    trailing_bits.append(f"Bench Mark Total Return {phr2} ({_pct(bm_total)} vs {_pct(br)})")
+
+            pw = d.get("portfolio_weight")
+            bw = d.get("benchmark_weight")
+            if include_trailing and isinstance(pw, (int, float)) and isinstance(bw, (int, float)):
+                wphr = _pw_vs_bw_phrase(float(pw) - float(bw))
+                if wphr:
+                    trailing_bits.append(f"PW is {wphr} BW ({_pct(pw)} vs {_pct(bw)})")
+
+            if trailing_bits:
+                # bench phrase first, then ",  " + PW phrase; end with semicolon
+                parts.append(f" {',  '.join(trailing_bits)};")
+
+            # End line with asterisk (as in your sample)
+            parts.append("*")
+            return "".join(parts)
+
+        # Compose final strings (assumes inputs are already ranked)
+        top_text = "\n".join([_line_for_row(d) for d in top_rows[:3]]) if top_rows else "Not reported in the context."
+        bot_text = "\n".join([_line_for_row(d) for d in bot_rows[:3]]) if bot_rows else "Not reported in the context."
+
+        print("***************top text")
+        print(top_text)
+
+        print("***************bottom text")
+        print(bot_text)
 
         # Destructure metrics
         active = summary.get("active_pp")
         port = summary.get("portfolio_ror")
         bench = summary.get("benchmark_ror")
+        effects_list = summary.get("effects",{})
+
+        verb = self.choose_opening_verb(float(active))
+        opening_template = (
+            f'The portfolio {verb} {port:.2f}% against the benchmark’s '
+            f'{bench:.2f}%. This resulted in an alpha of '
+            f'{effects_list["Total Management"]*100:.0f} bps, with {effects_list["Selection"]*100:.0f} bps attributed to issue selection and '
+            f'{effects_list["Allocation"]*100:.0f} bps to sector allocation.'
+        )
 
         # Definitions block (kept compact but explicit)
         defs = (
@@ -159,40 +333,29 @@ class PerformanceAttributionService:
             "- Report only effects provided in context. Do not invent.\n"
         )
 
-        header = f"TASK: Institutional attribution commentary for {summary.get('period','the period')}.\n\n"
-        facts = (
-            "DATA SUMMARY:\n"
-            f"Active: {active:+0.2f} pp | Portfolio: {port:.2f}% | Benchmark: {bench:.2f}%\n"
-            f"Effects: {effects_str}\n\n"
-        )
+        header = f"""OUTPUT TEMPLATE:
+    {opening_template}
 
+
+    Contributors:
+    *
+    *
+
+    Detractors:
+    *
+    *
+    """
+        # Replace the ranks block to match your expected section headings
         ranks = (
-            "RANKINGS:\n"
-            f"Top contributors: {top_text}\n"
-            f"Top detractors: {bot_text}\n\n"
+            "\n\nUSER: \n\nContributors (already ranked):\n"
+            f"{top_text}\n\n"
+            "Detractors (already ranked):\n"
+            f"{bot_text}\n"
         )
+        assistant = """\nNow write the attribution report commentary based on the provided data."""
 
-        fmt = (
-            "OUTPUT (MARKDOWN):\n"
-            "**Executive Summary**\n"
-            "- State active return and portfolio vs benchmark (%).\n"
-            "- Summarize key drivers by effect in pp (only those present).\n"
-            "- Add brief breadth/dispersion if evident.\n\n"
-            "**Total Performance Drivers**\n"
-            "- List effects present with pp values.\n\n"
-            "**Sector-Level Highlights**\n"
-            "- Top contributors (by Total Management).\n"
-            "- Top detractors (by Total Management).\n\n"
-            "**Risks / Watch Items**\n"
-            "- Only if suggested by concentration or effect pattern; else omit.\n\n"
-            "CONSTRAINTS:\n"
-            "- Use two decimal places for pp and retain +/- signs.\n"
-            "- Never express attribution in %.\n"
-            "- If any required value is missing, write: 'Not reported in the context.'\n"
-            "- ≤ 180 words.\n"
-        )
+        return header + ranks + assistant
 
-        return header + defs + facts + ranks + fmt
 
     # =========================== Excel Extraction =========================== #
 
@@ -534,17 +697,24 @@ class PerformanceAttributionService:
         chunks: List[AttributionChunk] = []
         bucket_col = self._find_bucket_column(df, metadata)
 
-        # Exclude any summary rows labeled "total"
+        # Identify total row if present
+        total_row = None
         df_rows = df.copy()
         if bucket_col in df_rows.columns:
-            df_rows = df_rows[df_rows[bucket_col].astype(str).str.strip().str.lower().ne("total")]
+            mask = df_rows[bucket_col].astype(str).str.strip().str.lower() == "total"
+            if mask.any():
+                total_row = df_rows[mask].iloc[0]
+                df_rows = df_rows[~mask]
 
         # Row chunks
         for _, row in df_rows.iterrows():
             chunks.append(self._build_row_chunk(row, metadata, bucket_col, session_id))
 
-        # Totals chunk
-        chunks.append(self._build_totals_chunk(df_rows, df, metadata, session_id))
+        # Totals chunk: use total row if available, else calculate
+        if total_row is not None:
+            chunks.append(self._build_row_chunk(total_row, metadata, bucket_col, session_id))
+        else:
+            chunks.append(self._build_totals_chunk(df_rows, df, metadata, session_id))
 
         # Rankings chunk (Total Management → Total Attribution → fallback formula)
         chunks.append(self._build_rankings_chunk(df_rows, metadata, bucket_col, session_id))
@@ -594,26 +764,26 @@ class PerformanceAttributionService:
         # Text - show numbers in 2 decimal places
         parts = [f"{metadata.period} • {metadata.attribution_level} row: {bucket_name}"]
         if portfolio_ror is not None and benchmark_ror is not None:
-            parts.append(f"Portfolio ROR: {portfolio_ror:.2f}% | Benchmark ROR: {benchmark_ror:.2f}%")
+            parts.append(f"Portfolio ROR: {portfolio_ror}% | Benchmark ROR: {benchmark_ror}%")
             if active_ror_pp is not None:
-                parts.append(f"Active ROR: {active_ror_pp:+.2f} pp")
+                parts.append(f"Active ROR: {active_ror_pp} pp")
 
         eff = []
-        if allocation_pp is not None: eff.append(f"Allocation Effect {allocation_pp:+.2f}")
-        if selection_pp is not None: eff.append(f"Selection Effect {selection_pp:+.2f}")
-        if fx_pp        is not None: eff.append(f"FX {fx_pp:+.2f}")
-        if carry_pp     is not None: eff.append(f"Carry {carry_pp:+.2f}")
-        if roll_pp      is not None: eff.append(f"Roll {roll_pp:+.2f}")
-        if price_pp     is not None: eff.append(f"Price {price_pp:+.2f}")
+        if allocation_pp is not None: eff.append(f"Allocation Effect {allocation_pp}")
+        if selection_pp is not None: eff.append(f"Selection Effect {selection_pp}")
+        if fx_pp        is not None: eff.append(f"FX {fx_pp}")
+        if carry_pp     is not None: eff.append(f"Carry {carry_pp}")
+        if roll_pp      is not None: eff.append(f"Roll {roll_pp}")
+        if price_pp     is not None: eff.append(f"Price {price_pp}")
         if eff: parts.append("Attribution effects (pp): " + ", ".join(eff))
 
         if total_mgmt_pp is not None:
-            parts.append(f"Total Management: {total_mgmt_pp:+.2f} pp")
+            parts.append(f"Total Management: {total_mgmt_pp} pp")
 
         if portfolio_wt is not None and benchmark_wt is not None:
-            parts.append(f"Weights: Portfolio {portfolio_wt:.2f}%, Benchmark {benchmark_wt:.2f}%")
+            parts.append(f"Weights: Portfolio {portfolio_wt}%, Benchmark {benchmark_wt}%")
             if rel_wt_pp is not None:
-                parts.append(f"(Rel {rel_wt_pp:+.2f} pp)")
+                parts.append(f"(Rel {rel_wt_pp} pp)")
 
         text = " | ".join(parts)
 
@@ -663,8 +833,10 @@ class PerformanceAttributionService:
             b_r = pd.to_numeric(df_rows[bench_r], errors="coerce")
             pw_sum = p_w.dropna().sum()
             bw_sum = b_w.dropna().sum()
-            portfolio_total = (p_r * p_w).sum() / pw_sum if pw_sum else np.nan
-            benchmark_total = (b_r * b_w).sum() / bw_sum if bw_sum else np.nan
+            # portfolio_total = (p_r * p_w).sum() / pw_sum if pw_sum else np.nan
+            portfolio_total =  p_r.sum()
+            # benchmark_total = (b_r * b_w).sum() / bw_sum if bw_sum else np.nan
+            benchmark_total = b_r.sum()
 
         # effects sum (pp)
         def sum_if(col_patterns: List[str]) -> Optional[float]:
@@ -689,16 +861,16 @@ class PerformanceAttributionService:
 
         lines = [f"{metadata.period} • TOTAL"]
         if portfolio_total is not None and benchmark_total is not None and not (pd.isna(portfolio_total) or pd.isna(benchmark_total)):
-            lines.append(f"Portfolio {portfolio_total:.2f}% vs Benchmark {benchmark_total:.2f}% → Active {active_pp:+.2f} pp")
+            lines.append(f"Portfolio {portfolio_total}% vs Benchmark {benchmark_total}% → Active {active_pp} pp")
 
         breakdown = []
-        if allocation_total is not None: breakdown.append(f"Allocation Effect {allocation_total:+.2f}")
-        if selection_total  is not None: breakdown.append(f"Selection Effect {selection_total:+.2f}")
-        if fx_total         is not None: breakdown.append(f"FX {fx_total:+.2f}")
-        if carry_total      is not None: breakdown.append(f"Carry {carry_total:+.2f}")
-        if roll_total       is not None: breakdown.append(f"Roll {roll_total:+.2f}")
-        if price_total      is not None: breakdown.append(f"Price {price_total:+.2f}")
-        if total_mgmt_total is not None: breakdown.append(f"Total Management {total_mgmt_total:+.2f}")
+        if allocation_total is not None: breakdown.append(f"Allocation Effect {allocation_total}")
+        if selection_total  is not None: breakdown.append(f"Selection Effect {selection_total}")
+        if fx_total         is not None: breakdown.append(f"FX {fx_total}")
+        if carry_total      is not None: breakdown.append(f"Carry {carry_total}")
+        if roll_total       is not None: breakdown.append(f"Roll {roll_total}")
+        if price_total      is not None: breakdown.append(f"Price {price_total}")
+        if total_mgmt_total is not None: breakdown.append(f"Total Management {total_mgmt_total}")
         if breakdown:
             lines.append("Attribution breakdown (pp): " + ", ".join(breakdown))
         text = "\n".join(lines)
@@ -749,17 +921,23 @@ class PerformanceAttributionService:
         top_contrib, top_detract = [], []
         for _, r in df_sorted.head(3).iterrows():
             if r[rank_key] > 0:
-                top_contrib.append({"bucket": str(r[bucket_col]), "pp": float(r[rank_key])})
+                contrib = {col: r[col] for col in df_sorted.columns}
+                contrib["bucket"] = str(r[bucket_col])
+                contrib["pp"] = float(r[rank_key])
+                top_contrib.append(contrib)
         for _, r in df_sorted.tail(3).iterrows():
             if r[rank_key] < 0:
-                top_detract.append({"bucket": str(r[bucket_col]), "pp": float(r[rank_key])})
+                detract = {col: r[col] for col in df_sorted.columns}
+                detract["bucket"] = str(r[bucket_col])
+                detract["pp"] = float(r[rank_key])
+                top_detract.append(detract)
 
         label = "Total Management"
         text_parts = [f"{metadata.period} • Rankings by {label} (pp)"]
         if top_contrib:
-            text_parts.append("Top: " + ", ".join([f"{t['bucket']} {t['pp']:+.2f}" for t in top_contrib]))
+            text_parts.append("Top: " + ", ".join([str(t) for t in top_contrib]))
         if top_detract:
-            text_parts.append("Bottom: " + ", ".join([f"{t['bucket']} {t['pp']:+.2f}" for t in top_detract]))
+            text_parts.append("Bottom: " + ", ".join([str(t) for t in top_detract]))
         text = "\n".join(text_parts)
 
         payload = {
@@ -973,9 +1151,10 @@ class PerformanceAttributionService:
 
             payloads = [r.payload for r in (search_results or [])]
 
+        
         # Summarize payloads → compact facts for fast prompting
         summary = self._summarize_payloads(payloads)
-
+        
         if mode == "commentary":
             return await self._generate_commentary_fast(summary, session_id)
         else:
@@ -1003,15 +1182,24 @@ class PerformanceAttributionService:
             "effects": {},  # name → value (pp)
             "top_contributors": [],
             "top_detractors": [],
+            "total_management":0.0
         }
 
-        # Find totals chunk
+
+        # Find totals chunk (prefer type=="total", else use chunk with bucket=="total")
         totals = next((p for p in payloads if p.get("type") == "total"), None)
+        if not totals:
+            # Fallback: look for a chunk with bucket=="total" (case-insensitive)
+            totals = next((p for p in payloads if str(p.get("bucket", "")).strip().lower() == "total"), None)
+
+        
+
         if totals:
             summary["period"] = totals.get("period", summary["period"])
-            pr = _pct(totals.get("portfolio_total_ror"))
-            br = _pct(totals.get("benchmark_total_ror"))
-            ap = _pp(totals.get("active_total_pp"))
+            # Try both possible key names for total values
+            pr = _pct(totals.get("portfolio_total_ror") or totals.get("portfolio_ror"))
+            br = _pct(totals.get("benchmark_total_ror") or totals.get("benchmark_ror"))
+            ap = _pp(totals.get("active_total_pp") or totals.get("active_ror_pp"))
             if pr is not None: summary["portfolio_ror"] = pr
             if br is not None: summary["benchmark_ror"] = br
             if ap is not None: summary["active_pp"] = ap
@@ -1024,7 +1212,7 @@ class PerformanceAttributionService:
                 "Carry": totals.get("carry_pp"),
                 "Roll": totals.get("roll_pp"),
                 "Price": totals.get("price_pp"),
-                "Total Management": totals.get("total_management_pp"),
+                "Total Management": totals.get("total_management"),
             }
             for k, v in eff_map.items():
                 v = _pp(v)
@@ -1036,16 +1224,9 @@ class PerformanceAttributionService:
         if ranks:
             tcs = ranks.get("top_contributors") or []
             tds = ranks.get("top_detractors") or []
-            def _clean_rank(items):
-                out = []
-                for it in items:
-                    b = it.get("bucket")
-                    v = _pp(it.get("pp"))
-                    if b and v is not None:
-                        out.append({"bucket": str(b), "pp": float(v)})
-                return out
-            summary["top_contributors"] = _clean_rank(tcs)
-            summary["top_detractors"]  = _clean_rank(tds)
+            # Directly assign the full dicts from ranking chunk to summary
+            summary["top_contributors"] = [dict(it) for it in tcs]
+            summary["top_detractors"]  = [dict(it) for it in tds]
 
         # If rankings empty → recompute from row payloads
         if not summary["top_contributors"] and not summary["top_detractors"]:
@@ -1096,9 +1277,12 @@ class PerformanceAttributionService:
             }
 
         user_prompt = self._prompt_template_fast(summary)
+
+        
+        # system_prompt=self.system_prompt + "\n" + self.developer_prompt,
         response = await self.ollama.generate_response(
             user_prompt,
-            system_prompt=self.system_prompt + "\n" + self.developer_prompt,
+            system_prompt=self.system_prompt,
             temperature=0.1
         )
         return {
