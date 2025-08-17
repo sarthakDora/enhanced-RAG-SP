@@ -1,0 +1,31 @@
+# Override file for development environment
+# Use with: docker-compose -f docker-compose.yml -f docker-compose.override.yml up
+
+services:
+  backend:
+    env_file:
+      - .env.docker
+    volumes:
+      # Mount source code for development hot reload
+      - ./backend:/app
+      # Preserve node_modules and other build artifacts
+      - /app/__pycache__
+    environment:
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+    ports:
+      - "8000:8000"
+      - "8001:8001"  # Debug port
+
+  frontend:
+    # For development, you might want to run frontend separately
+    # and just proxy API calls through nginx
+    environment:
+      - NODE_ENV=development
+
+  ollama:
+    # Remove GPU constraint for development if not available
+    deploy:
+      resources:
+        reservations:
+          devices: []

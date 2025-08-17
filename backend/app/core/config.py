@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     OLLAMA_BASE_URL: str = Field(default="http://localhost:11434")
     EMBEDDING_MODEL: str = Field(default="nomic-embed-text:latest")
     # LLM_MODEL: str = Field(default="llama3.2:latest")
-    LLM_MODEL: str = Field(default="gemma3:latest")
+    LLM_MODEL: str = Field(default="gemma3:12b")
     
     # Qdrant Configuration
     QDRANT_URL: str = Field(default="http://localhost:6333")

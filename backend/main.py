@@ -148,7 +148,14 @@ app.add_middleware(LargeFileMiddleware)
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:4200", "http://127.0.0.1:4200"],
+    allow_origins=[
+        "http://localhost:4200", 
+        "http://127.0.0.1:4200",
+        "http://localhost",
+        "http://localhost:80",
+        "http://127.0.0.1",
+        "http://127.0.0.1:80"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -173,6 +180,43 @@ async def root():
         "attribution_routes_loaded": len(attribution_routes),
         "attribution_routes": attribution_routes
     }
+
+@app.get("/health")
+async def root_health():
+    """Root health endpoint - alias to /api/health for compatibility"""
+    try:
+        # Check services
+        qdrant_service = app.state.qdrant_service
+        ollama_service = app.state.ollama_service
+        
+        qdrant_status = "unknown"
+        try:
+            await qdrant_service.health_check()
+            qdrant_status = "healthy"
+        except Exception:
+            qdrant_status = "unhealthy"
+        
+        ollama_status = "unknown"
+        try:
+            await ollama_service.health_check()
+            ollama_status = "healthy"
+        except Exception:
+            ollama_status = "unhealthy"
+        
+        overall_status = "healthy" if (
+            "healthy" in qdrant_status and "healthy" in ollama_status
+        ) else "degraded"
+        
+        return {
+            "status": overall_status,
+            "services": {
+                "qdrant": qdrant_status,
+                "ollama": ollama_status
+            },
+            "version": "1.0.0"
+        }
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
 
 if __name__ == "__main__":
     uvicorn.run(

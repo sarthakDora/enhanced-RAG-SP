@@ -41,7 +41,7 @@ echo.
 echo Next steps:
 echo 1. Install Ollama from https://ollama.ai
 echo 2. Run: ollama pull nomic-embed-text
-echo 3. Run: ollama pull gemma2:7b
+echo 3. Run: ollama pull Gemma3:12b
 echo 4. Install Node.js and Angular CLI for frontend
 echo 5. Run the backend: python backend\main.py
 echo.

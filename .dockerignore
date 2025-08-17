@@ -1,0 +1,98 @@
+# Root .dockerignore for the entire project
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Documentation
+*.md
+docs/
+README*
+CHANGELOG*
+LICENSE*
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+.project
+.classpath
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs and runtime files
+*.log
+logs/
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Environment files
+.env*
+!.env.docker
+
+# Testing
+coverage/
+.nyc_output/
+.pytest_cache/
+
+# Temporary and cache files
+*.tmp
+*.temp
+temp/
+tmp/
+.cache/
+
+# Development scripts and test files
+test_*.py
+debug_*.py
+demo_*.py
+manual_*.py
+simple_*.py
+start_*.py
+fix_*.py
+verify_*.py
+diagnostic_*.py
+create_*.py
+*.bat
+*.ps1
+
+# Sample and test data
+sample_documents/
+test_*.txt
+test_*.xlsx
+test_*.csv
+test_*.docx
+test_*.json
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Database files
+*.db
+*.sqlite
+
+# Backup files
+*.bak
+backup/
+
+# Large files
+uploads/
+processed/
+
+# Virtual environments
+venv/
+env/
+ENV/

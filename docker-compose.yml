@@ -1,9 +1,45 @@
-version: '3.8'
-
 services:
+  # Backend API service
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: enhanced_rag_backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/uploads:/app/uploads
+      - ./backend/logs:/app/logs
+      - ./backend/processed:/app/processed
+    env_file:
+      - .env.docker
+    environment:
+      - PYTHONPATH=/app
+    depends_on:
+      - qdrant
+      - ollama
+    restart: unless-stopped
+    networks:
+      - rag_network
+
+  # Frontend service
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: enhanced_rag_frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - rag_network
+
+  # Vector database
   qdrant:
     image: qdrant/qdrant:v1.7.0
-    container_name: qdrant_financial_rag
+    container_name: enhanced_rag_qdrant
     ports:
       - "6333:6333"
       - "6334:6334"
@@ -12,27 +48,44 @@ services:
     environment:
       - QDRANT__SERVICE__HTTP_PORT=6333
       - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__LOG_LEVEL=INFO
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:6333 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
     networks:
       - rag_network
 
-  # Uncomment if you want to run Ollama in Docker as well
-  # ollama:
-  #   image: ollama/ollama:latest
-  #   container_name: ollama_financial_rag
-  #   ports:
-  #     - "11434:11434"
-  #   volumes:
-  #     - ollama_data:/root/.ollama
-  #   environment:
-  #     - OLLAMA_ORIGINS=*
-  #   restart: unless-stopped
-  #   networks:
-  #     - rag_network
+  # Ollama LLM service
+  ollama:
+    image: ollama/ollama:latest
+    container_name: enhanced_rag_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_ORIGINS=*
+      - OLLAMA_HOST=0.0.0.0
+    restart: unless-stopped
+    networks:
+      - rag_network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
 volumes:
   qdrant_storage:
-  # ollama_data:
+    driver: local
+  ollama_data:
+    driver: local
 
 networks:
   rag_network:

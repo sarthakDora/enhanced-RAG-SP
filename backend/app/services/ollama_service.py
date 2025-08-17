@@ -4,14 +4,7 @@ import json
 import logging
 from typing import List, Dict, Any, Optional, AsyncGenerator
 import time
-
-from langchain_ollama import OllamaLLM, OllamaEmbeddings
-from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
-from langchain_core.documents import Document as LangChainDocument
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.chains import RetrievalQA
-from langchain_community.vectorstores import Qdrant as LangChainQdrant
-from langchain_core.retrievers import BaseRetriever
+import ollama
 
 from ..core.config import settings
 
@@ -24,24 +17,12 @@ class OllamaService:
         self.llm_model = settings.LLM_MODEL
         self.timeout = 300  # 5 minutes for LLM generation
         
-        # Initialize LangChain components
-        self.llm = OllamaLLM(
-            model=self.llm_model,
-            base_url=self.base_url,
-            temperature=0.1
-        )
+        # Initialize Ollama client
+        self.client = ollama.Client(host=self.base_url)
         
-        self.embeddings = OllamaEmbeddings(
-            model=self.embedding_model,
-            base_url=self.base_url
-        )
-        
-        # Text splitter for document processing
-        self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200,
-            separators=["\n\n", "\n", ". ", " ", ""]
-        )
+        # Configure chunk settings for document processing
+        self.chunk_size = 1000
+        self.chunk_overlap = 200
         
     async def health_check(self) -> bool:
         """Check if Ollama is accessible and models are available"""
@@ -120,14 +101,18 @@ class OllamaService:
             raise
 
     async def generate_embedding(self, text: str) -> List[float]:
-        """Generate embedding for a single text using LangChain"""
+        """Generate embedding for a single text using Ollama client"""
         try:
-            # Use LangChain embeddings
-            embedding = await asyncio.to_thread(self.embeddings.embed_query, text)
-            return embedding
+            # Use ollama client for embeddings
+            response = await asyncio.to_thread(
+                self.client.embeddings,
+                model=self.embedding_model,
+                prompt=text
+            )
+            return response['embedding']
         except Exception as e:
-            logger.error(f"Failed to generate embedding with LangChain: {e}")
-            # Fallback to original method
+            logger.error(f"Failed to generate embedding with Ollama client: {e}")
+            # Fallback to HTTP method
             embeddings = await self.generate_embeddings([text])
             return embeddings[0]
 
@@ -360,18 +345,16 @@ Respond only with valid JSON."""
                     for msg in conversation_history[-5:]  # Last 5 messages
                 ])
             
-            # Create the prompt template
-            prompt_template = PromptTemplate(
-                input_variables=["context", "conversation_history", "question"],
-                template="""You are a sophisticated financial AI assistant. Use the following context from financial documents to answer the question. If the context doesn't contain relevant information, say so clearly.
+            # Create the formatted prompt
+            formatted_prompt = f"""You are a sophisticated financial AI assistant. Use the following context from financial documents to answer the question. If the context doesn't contain relevant information, say so clearly.
 
 DOCUMENT CONTEXT:
-{context}
+{context_text if context_text else "No document context available."}
 
 CONVERSATION HISTORY:
-{conversation_history}
+{conversation_context if conversation_context else "No previous conversation."}
 
-QUESTION: {question}
+QUESTION: {query}
 
 INSTRUCTIONS:
 1. Base your answer primarily on the provided document context
@@ -381,17 +364,15 @@ INSTRUCTIONS:
 5. Consider the conversation history for continuity
 
 ANSWER:"""
-            )
             
-            # Format the prompt
-            formatted_prompt = prompt_template.format(
-                context=context_text if context_text else "No document context available.",
-                conversation_history=conversation_context if conversation_context else "No previous conversation.",
-                question=query
+            # Generate response using Ollama client
+            response_data = await asyncio.to_thread(
+                self.client.generate,
+                model=self.llm_model,
+                prompt=formatted_prompt,
+                options={'temperature': temperature}
             )
-            
-            # Generate response using LangChain LLM
-            response = await asyncio.to_thread(self.llm.invoke, formatted_prompt)
+            response = response_data['response']
             
             generation_time = time.time() - start_time
             
