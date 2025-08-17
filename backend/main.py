@@ -16,7 +16,7 @@ load_dotenv()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    print("Starting Enhanced RAG System for Financial Institution...")
+    print("Starting VBAM RAG System for Financial Institution...")
     
     # Initialize services
     qdrant_service = QdrantService()
@@ -105,10 +105,10 @@ async def lifespan(app: FastAPI):
     yield
     
     # Shutdown
-    print("Shutting down Enhanced RAG System...")
+    print("Shutting down VBAM RAG System...")
 
 app = FastAPI(
-    title="Enhanced RAG System API",
+    title="VBAM RAG System API",
     description="Advanced RAG system for financial document processing with multi-strategy reranking",
     version="1.0.0",
     lifespan=lifespan,
@@ -165,7 +165,7 @@ app.include_router(settings_router.router, prefix="/api", tags=["settings"])
 async def root():
     attribution_routes = [str(route.path) for route in app.routes if hasattr(route, 'path') and 'attribution' in str(route.path)]
     return {
-        "message": "Enhanced RAG System API for Financial Institution",
+    "message": "VBAM RAG System API for Financial Institution",
         "version": "1.0.0",
         "status": "running",
         "attribution_routes_loaded": len(attribution_routes),

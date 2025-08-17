@@ -1,4 +1,4 @@
-# Enhanced RAG System for Financial Institution
+# VBAM RAG System for Financial Institution
 
 A comprehensive Retrieval-Augmented Generation (RAG) system designed specifically for financial institutions, featuring advanced document processing, multi-strategy reranking, and a modern glassmorphism UI.
 
@@ -372,4 +372,4 @@ For questions or support:
 
 ---
 
-**Enhanced RAG System v1.0.0** - Built for Financial Institution Excellence 🏦✨
+**VBAM RAG System v1.0.0** - Built for Financial Institution Excellence 🏦✨

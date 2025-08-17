@@ -46,7 +46,7 @@ interface ChatSettings {
     <div class="settings-container fade-in">
       <div class="settings-header glass-card">
         <h2 class="gradient-text">Settings</h2>
-        <p class="text-muted">Configure your Enhanced RAG System</p>
+  <p class="text-muted">Configure your VBAM RAG System</p>
       </div>
 
       <!-- Chat Settings -->

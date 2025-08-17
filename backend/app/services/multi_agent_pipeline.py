@@ -496,7 +496,7 @@ Content: {content}
         return "\n".join(formatted)
 
 class MultiAgentPipeline:
-    """Orchestrates the multi-agent pipeline for enhanced RAG"""
+    """Orchestrates the multi-agent pipeline for VBAM RAG"""
     
     def __init__(self, ollama_service: OllamaService, qdrant_service: QdrantService):
         self.categorization_agent = QueryCategorizationAgent(ollama_service)

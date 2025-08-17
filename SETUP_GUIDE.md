@@ -1,6 +1,6 @@
-# Complete Setup Guide - Enhanced RAG System
+# Complete Setup Guide - VBAM RAG System
 
-This guide provides comprehensive instructions for setting up and running the Enhanced RAG System locally on any machine.
+This guide provides comprehensive instructions for setting up and running the VBAM RAG System locally on any machine.
 
 ## 📋 Prerequisites
 
@@ -190,7 +190,7 @@ Check that all services are running:
 ### Windows Batch Script (setup.bat)
 ```batch
 @echo off
-echo Setting up Enhanced RAG System...
+echo Setting up VBAM RAG System...
 
 # Create virtual environment
 python -m venv venv
@@ -222,7 +222,7 @@ echo 3. Start frontend: cd frontend && npm start
 ### Linux/macOS Shell Script (setup.sh)
 ```bash
 #!/bin/bash
-echo "Setting up Enhanced RAG System..."
+echo "Setting up VBAM RAG System..."
 
 # Create virtual environment
 python3 -m venv venv
@@ -378,6 +378,6 @@ If you encounter issues:
 
 ---
 
-**Setup Guide Version 1.0** - Complete dependency management for Enhanced RAG System
+**Setup Guide Version 1.0** - Complete dependency management for VBAM RAG System
 
 ##backend can be started using powershell -ExecutionPolicy Bypass -File .\start_backend.ps1

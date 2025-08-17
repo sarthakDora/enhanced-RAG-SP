@@ -32,7 +32,7 @@ import { Subscription, filter } from 'rxjs';
           mode="over">
           <div class="sidenav-content">
             <div class="logo-section">
-              <h2 class="gradient-text">Enhanced RAG</h2>
+              <h2 class="gradient-text">VBAM RAG</h2>
               <p class="text-muted">Financial AI Assistant</p>
             </div>
             
@@ -91,7 +91,7 @@ import { Subscription, filter } from 'rxjs';
               <mat-icon aria-label="Side nav toggle icon">menu</mat-icon>
             </button>
             
-            <span class="toolbar-title gradient-text">Enhanced RAG System</span>
+            <span class="toolbar-title gradient-text">VBAM RAG System</span>
             
             <div class="toolbar-spacer"></div>
             
@@ -275,7 +275,7 @@ import { Subscription, filter } from 'rxjs';
   `]
 })
 export class AppComponent implements OnInit, OnDestroy {
-  title = 'Enhanced RAG System';
+  title = 'VBAM RAG System';
   isConnected = true;
   hasDocumentUpdates = false;
   private subscriptions: Subscription[] = [];

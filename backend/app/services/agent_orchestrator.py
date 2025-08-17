@@ -1,5 +1,5 @@
 """
-Multi-Agent Orchestrator for Enhanced RAG System
+Multi-Agent Orchestrator for VBAM RAG System
 Implements state-of-the-art multi-agent architecture for financial document analysis
 """
 
