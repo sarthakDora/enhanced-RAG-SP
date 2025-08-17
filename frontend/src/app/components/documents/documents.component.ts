@@ -147,6 +147,16 @@ interface CollectionInfo {
               </mat-select>
             </mat-form-field>
             
+            <!-- VBAM Component Selection - only show when VBAM Support is selected -->
+            <mat-form-field appearance="outline" *ngIf="isVbamSupport">
+              <mat-label>VBAM Component</mat-label>
+              <mat-select [(value)]="selectedVbamComponent" required>
+                <mat-option *ngFor="let component of vbamComponents" [value]="component.value">
+                  {{ component.label }}
+                </mat-option>
+              </mat-select>
+            </mat-form-field>
+            
             <mat-form-field appearance="outline">
               <mat-label>Tags (comma separated)</mat-label>
               <input matInput [(ngModel)]="tags" placeholder="e.g., Q4-2023, earnings, report">
@@ -157,10 +167,12 @@ interface CollectionInfo {
             <button mat-raised-button 
                     color="primary"
                     class="glass-button"
-                    [disabled]="isUploading"
+                    [disabled]="isUploading || (isVbamSupport && !selectedVbamComponent)"
                     (click)="uploadFiles()">
               <mat-icon>upload</mat-icon>
-              {{ isPerformanceAttribution ? 'Process Attribution File' : 'Upload' }} {{ selectedFiles.length }} File(s)
+              {{ isPerformanceAttribution ? 'Process Attribution File' : 
+                 isVbamSupport ? 'Upload VBAM Documentation' : 
+                 'Upload' }} {{ selectedFiles.length }} File(s)
             </button>
             
             <button mat-button 
@@ -384,13 +396,26 @@ interface CollectionInfo {
       </div>
 
       <!-- Documents Stats -->
-      <div class="stats-section" *ngIf="stats">
-        <div class="stats-grid">
-          <div class="stat-card glass-card">
-            <mat-icon>description</mat-icon>
+      <div class="stats-section">
+        <div class="stats-header">
+          <h3>Document Collection Statistics</h3>
+          <p class="stats-description">Real-time count of documents available in Qdrant vector database</p>
+          <button mat-icon-button 
+                  class="glass-button refresh-stats"
+                  (click)="refreshStats()"
+                  matTooltip="Refresh statistics">
+            <mat-icon>refresh</mat-icon>
+          </button>
+        </div>
+        
+        <!-- Show stats if available -->
+        <div class="stats-grid" *ngIf="stats">
+          <div class="stat-card glass-card primary-stat">
+            <mat-icon>storage</mat-icon>
             <div class="stat-content">
               <h3>{{ stats.total_documents }}</h3>
-              <p>Total Documents</p>
+              <p>Documents in Qdrant</p>
+              <span class="stat-note">Available for search</span>
             </div>
           </div>
           
@@ -416,6 +441,25 @@ interface CollectionInfo {
               <h3>{{ stats.average_chunks_per_document.toFixed(1) }}</h3>
               <p>Avg Chunks/Doc</p>
             </div>
+          </div>
+
+          <!-- Qdrant Status Card -->
+          <div class="stat-card glass-card qdrant-status" *ngIf="stats.qdrant_info">
+            <mat-icon>cloud</mat-icon>
+            <div class="stat-content">
+              <h3>{{ stats.qdrant_info.total_points_in_qdrant }}</h3>
+              <p>Qdrant Points</p>
+              <span class="stat-note">Status: {{ stats.qdrant_info.qdrant_status }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Show message if stats not loaded -->
+        <div class="stats-loading glass-card" *ngIf="!stats">
+          <mat-icon>hourglass_empty</mat-icon>
+          <div>
+            <h4>Loading Document Statistics...</h4>
+            <p>Counting documents in Qdrant vector database</p>
           </div>
         </div>
       </div>
@@ -480,7 +524,8 @@ interface CollectionInfo {
           <h3>Uploaded Documents</h3>
           <button mat-icon-button 
                   class="glass-button"
-                  (click)="refreshDocuments()">
+                  (click)="forceRefresh()"
+                  matTooltip="Refresh documents">
             <mat-icon>refresh</mat-icon>
           </button>
         </div>
@@ -766,6 +811,36 @@ interface CollectionInfo {
       margin: 24px 0;
     }
 
+    .stats-header {
+      position: relative;
+      text-align: center;
+      margin-bottom: 20px;
+    }
+
+    .stats-header h3 {
+      margin: 0 0 8px 0;
+      font-size: 20px;
+      color: var(--text-primary);
+    }
+
+    .stats-description {
+      margin: 0;
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+
+    .refresh-stats {
+      position: absolute;
+      top: 0;
+      right: 0;
+      opacity: 0.7;
+      transition: opacity 0.3s ease;
+    }
+
+    .refresh-stats:hover {
+      opacity: 1;
+    }
+
     .stats-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
@@ -782,6 +857,30 @@ interface CollectionInfo {
 
     .stat-card:hover {
       transform: translateY(-2px);
+    }
+
+    .stat-card.primary-stat {
+      border-left: 4px solid #667eea;
+      background: linear-gradient(45deg, rgba(102, 126, 234, 0.1), rgba(118, 75, 162, 0.1));
+    }
+
+    .stat-card.primary-stat mat-icon {
+      color: #667eea;
+    }
+
+    .stat-card.primary-stat .stat-content h3 {
+      color: #667eea;
+      font-size: 28px;
+      font-weight: 700;
+    }
+
+    .stat-card.qdrant-status {
+      border-left: 4px solid #4caf50;
+      background: linear-gradient(45deg, rgba(76, 175, 80, 0.1), rgba(67, 160, 71, 0.1));
+    }
+
+    .stat-card.qdrant-status mat-icon {
+      color: #4caf50;
     }
 
     .stat-card mat-icon {
@@ -801,6 +900,40 @@ interface CollectionInfo {
       margin: 4px 0 0 0;
       color: var(--text-secondary);
       font-size: 14px;
+    }
+
+    .stat-note {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 2px;
+      display: block;
+    }
+
+    .stats-loading {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 24px;
+      text-align: left;
+    }
+
+    .stats-loading mat-icon {
+      font-size: 32px;
+      width: 32px;
+      height: 32px;
+      color: var(--text-secondary);
+    }
+
+    .stats-loading h4 {
+      margin: 0 0 4px 0;
+      font-size: 16px;
+      color: var(--text-primary);
+    }
+
+    .stats-loading p {
+      margin: 0;
+      font-size: 14px;
+      color: var(--text-secondary);
     }
 
     .collections-list {
@@ -1313,6 +1446,7 @@ export class DocumentsComponent implements OnInit, OnDestroy {
   selectedFiles: File[] = [];
   uploadFilesList: UploadFile[] = [];
   selectedDocumentType: DocumentType = DocumentType.OTHER;
+  selectedVbamComponent = '';
   tags = '';
   isDragOver = false;
   isUploading = false;
@@ -1345,7 +1479,15 @@ export class DocumentsComponent implements OnInit, OnDestroy {
     { value: DocumentType.COMPLIANCE_REPORT, label: 'Compliance Report' },
     { value: DocumentType.MARKET_ANALYSIS, label: 'Market Analysis' },
     { value: DocumentType.PERFORMANCE_ATTRIBUTION, label: 'Performance Attribution' },
+    { value: DocumentType.VBAM_SUPPORT, label: 'VBAM Support Documentation' },
     { value: DocumentType.OTHER, label: 'Other' }
+  ];
+
+  vbamComponents = [
+    { value: 'IPR', label: 'IPR (Investment Performance Report)' },
+    { value: 'Analytics Report', label: 'Analytics Report' },
+    { value: 'Factsheet', label: 'Factsheet' },
+    { value: 'Holdings and Risk', label: 'Holdings and Risk' }
   ];
 
   private subscriptions: Subscription[] = [];
@@ -1366,6 +1508,17 @@ export class DocumentsComponent implements OnInit, OnDestroy {
       this.refreshDocuments();
     });
     this.subscriptions.push(docUpdateSub);
+
+    // Add window focus listener to refresh documents when user returns to page
+    const focusListener = () => {
+      this.refreshDocuments();
+    };
+    window.addEventListener('focus', focusListener);
+    
+    // Store reference for cleanup
+    this.subscriptions.push({
+      unsubscribe: () => window.removeEventListener('focus', focusListener)
+    } as any);
   }
 
   ngOnDestroy() {
@@ -1374,6 +1527,10 @@ export class DocumentsComponent implements OnInit, OnDestroy {
 
   get isPerformanceAttribution(): boolean {
     return this.selectedDocumentType === DocumentType.PERFORMANCE_ATTRIBUTION;
+  }
+
+  get isVbamSupport(): boolean {
+    return this.selectedDocumentType === DocumentType.VBAM_SUPPORT;
   }
 
   triggerFileInput() {
@@ -1434,6 +1591,7 @@ export class DocumentsComponent implements OnInit, OnDestroy {
     this.selectedFiles = [];
     this.uploadFilesList = [];
     this.tags = '';
+    this.selectedVbamComponent = '';
     this.hasAttributionFiles = false;
     this.attributionResult = null;
     this.attributionSessionId = '';
@@ -1458,6 +1616,12 @@ export class DocumentsComponent implements OnInit, OnDestroy {
     // Handle Performance Attribution processing
     if (this.isPerformanceAttribution) {
       await this.processAttributionFiles();
+      return;
+    }
+    
+    // Handle VBAM Support documentation upload
+    if (this.isVbamSupport) {
+      await this.processVbamFiles();
       return;
     }
 
@@ -1534,6 +1698,27 @@ export class DocumentsComponent implements OnInit, OnDestroy {
     this.loadStats();
   }
 
+  async refreshStats() {
+    try {
+      await this.loadStats();
+      this.showSuccess('Statistics refreshed successfully');
+    } catch (error) {
+      this.showError('Failed to refresh statistics');
+    }
+  }
+
+  async forceRefresh() {
+    // Force refresh documents and show loading indicator
+    try {
+      await this.loadDocuments();
+      await this.loadStats();
+      await this.loadAttributionCollections();
+      this.showSuccess('Documents refreshed successfully');
+    } catch (error) {
+      this.showError('Failed to refresh documents');
+    }
+  }
+
   openDocument(doc: DocumentListItem) {
     // Implement document viewer
     console.log('Opening document:', doc);
@@ -1604,6 +1789,7 @@ export class DocumentsComponent implements OnInit, OnDestroy {
       'compliance_report': 'verified_user',
       'market_analysis': 'trending_up',
       'performance_attribution': 'analytics',
+      'vbam_support': 'precision_manufacturing',
       'other': 'description'
     };
     return iconMap[type] || 'description';
@@ -1771,6 +1957,63 @@ export class DocumentsComponent implements OnInit, OnDestroy {
       this.showError('Failed to copy to clipboard');
     });
   }
+
+  // VBAM Support processing
+  async processVbamFiles() {
+    if (this.selectedFiles.length === 0 || !this.selectedVbamComponent) return;
+    
+    try {
+      this.uploadFilesList = this.selectedFiles.map(file => ({
+        file,
+        progress: 0,
+        status: 'uploading' as const
+      }));
+
+      // Initialize VBAM collections first
+      await this.apiService.initializeVBAMCollections().toPromise();
+
+      for (let i = 0; i < this.selectedFiles.length; i++) {
+        const file = this.selectedFiles[i];
+        this.uploadFilesList[i].progress = 50;
+
+        try {
+          // Upload to VBAM component collection using proper API service
+          const result = await this.apiService.uploadVBAMDocument(
+            this.selectedVbamComponent, 
+            file, 
+            this.tags || undefined
+          ).toPromise();
+          
+          this.uploadFilesList[i].status = 'completed';
+          this.uploadFilesList[i].progress = 100;
+          
+          this.showSuccess(`VBAM ${this.selectedVbamComponent} documentation uploaded successfully! (${result.documents_in_collection} documents in collection)`);
+          
+        } catch (error: any) {
+          this.uploadFilesList[i].status = 'error';
+          this.uploadFilesList[i].error = error.error?.detail || error.message || 'Upload failed';
+          this.showError(`Failed to upload to ${this.selectedVbamComponent}: ${this.uploadFilesList[i].error}`);
+        }
+      }
+
+      // Clear selection after processing
+      setTimeout(() => {
+        this.clearSelection();
+      }, 3000);
+
+    } catch (error: any) {
+      this.showError(`Failed to process VBAM files: ${error.error?.detail || error.message || 'Unknown error'}`);
+      this.uploadFilesList.forEach(uploadFile => {
+        if (uploadFile.status === 'uploading') {
+          uploadFile.status = 'error';
+          uploadFile.error = 'Upload failed';
+        }
+      });
+    } finally {
+      this.isUploading = false;
+    }
+  }
+
 
   trackByIndex(index: number, item: any): number {
     return index;

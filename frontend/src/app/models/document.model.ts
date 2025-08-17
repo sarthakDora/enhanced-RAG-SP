@@ -4,6 +4,7 @@ export enum DocumentType {
   COMPLIANCE_REPORT = 'compliance_report',
   MARKET_ANALYSIS = 'market_analysis',
   PERFORMANCE_ATTRIBUTION = 'performance_attribution',
+  VBAM_SUPPORT = 'vbam_support',
   OTHER = 'other'
 }
 
@@ -58,6 +59,9 @@ export interface DocumentMetadata {
   attribution_period?: string;
   benchmark_name?: string;
   portfolio_name?: string;
+  
+  // VBAM Support specific fields
+  vbam_component?: string;
   
   tags: string[];
   custom_fields: { [key: string]: any };
@@ -124,10 +128,18 @@ export interface DocumentListItem {
   tags: string[];
 }
 
+export interface QdrantInfo {
+  total_points_in_qdrant: number;
+  indexed_points: number;
+  collections_status: { [key: string]: any };
+  qdrant_status: string;
+}
+
 export interface DocumentStats {
   total_documents: number;
   total_chunks: number;
   documents_with_financial_data: number;
   document_types: { [key: string]: number };
   average_chunks_per_document: number;
+  qdrant_info?: QdrantInfo;
 }

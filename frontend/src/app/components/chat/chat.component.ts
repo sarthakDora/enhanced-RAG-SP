@@ -66,6 +66,7 @@ import { ChatSettingsDialogComponent } from './chat-settings-dialog.component';
                           (selectionChange)="onDocumentTypeChange($event.value)">
                 <mat-option value="">All Documents</mat-option>
                 <mat-option value="performance_attribution">Performance Attribution</mat-option>
+                <mat-option value="vbam_support">VBAM Support Documentation</mat-option>
                 <mat-option value="financial_report">Financial Reports</mat-option>
                 <mat-option value="market_analysis">Market Analysis</mat-option>
                 <mat-option value="compliance_report">Compliance Reports</mat-option>
@@ -139,24 +140,64 @@ import { ChatSettingsDialogComponent } from './chat-settings-dialog.component';
           <div *ngIf="messages.length === 0" class="welcome-message glass-card slide-up">
             <div class="welcome-content">
               <mat-icon class="welcome-icon">smart_toy</mat-icon>
-              <h3 class="gradient-text">Welcome to VBAM RAG</h3>
-              <p>I'm your financial AI assistant. I can help you analyze financial documents, reports, and data. Ask me anything about your uploaded documents!</p>
+              <h3 class="gradient-text">
+                <span *ngIf="selectedDocumentType === 'vbam_support'">VBAM Support Assistant</span>
+                <span *ngIf="selectedDocumentType !== 'vbam_support'">Welcome to VBAM RAG</span>
+              </h3>
+              <p *ngIf="selectedDocumentType === 'vbam_support'">
+                I'm your VBAM support specialist. I can help you understand VBAM features, navigation, inputs, and outputs across all components (IPR, Analytics Report, Factsheet, Holdings and Risk). 
+                I'll maintain context from our conversation to provide better assistance.
+              </p>
+              <p *ngIf="selectedDocumentType !== 'vbam_support'">
+                I'm your financial AI assistant. I can help you analyze financial documents, reports, and data. Ask me anything about your uploaded documents!
+              </p>
               
               <div class="quick-actions">
                 <button class="glass-button quick-action"
-                        (click)="sendQuickMessage('What financial documents do I have uploaded?')">
+                        (click)="sendQuickMessage('What financial documents do I have uploaded?')"
+                        *ngIf="selectedDocumentType !== 'vbam_support'">
                   <mat-icon>description</mat-icon>
                   View Documents
                 </button>
                 
+                <!-- VBAM-specific quick actions -->
+                <ng-container *ngIf="selectedDocumentType === 'vbam_support'">
+                  <button class="glass-button quick-action"
+                          (click)="sendQuickMessage('What are the inputs for IPR?')">
+                    <mat-icon>input</mat-icon>
+                    IPR Inputs
+                  </button>
+                  
+                  <button class="glass-button quick-action"
+                          (click)="sendQuickMessage('How do I navigate to Analytics Report?')">
+                    <mat-icon>analytics</mat-icon>
+                    Analytics Navigation
+                  </button>
+                  
+                  <button class="glass-button quick-action"
+                          (click)="sendQuickMessage('What components are available in VBAM?')">
+                    <mat-icon>dashboard</mat-icon>
+                    VBAM Components
+                  </button>
+                  
+                  <button class="glass-button quick-action"
+                          (click)="sendQuickMessage('Summarize our conversation so far')"
+                          *ngIf="messages.length > 2">
+                    <mat-icon>summarize</mat-icon>
+                    Summarize Conversation
+                  </button>
+                </ng-container>
+                
                 <button class="glass-button quick-action"
-                        (click)="sendQuickMessage('Show me the latest revenue figures')">
+                        (click)="sendQuickMessage('Show me the latest revenue figures')"
+                        *ngIf="selectedDocumentType !== 'vbam_support'">
                   <mat-icon>trending_up</mat-icon>
                   Revenue Analysis
                 </button>
                 
                 <button class="glass-button quick-action"
-                        (click)="sendQuickMessage('What are the key performance metrics?')">
+                        (click)="sendQuickMessage('What are the key performance metrics?')"
+                        *ngIf="selectedDocumentType !== 'vbam_support'">
                   <mat-icon>analytics</mat-icon>
                   Performance Metrics
                 </button>
@@ -257,6 +298,7 @@ import { ChatSettingsDialogComponent } from './chat-settings-dialog.component';
               <mat-label>Upload as</mat-label>
               <mat-select [(ngModel)]="uploadDocumentType">
                 <mat-option value="performance_attribution">Performance Attribution</mat-option>
+                <mat-option value="vbam_support">VBAM Support Documentation</mat-option>
                 <mat-option value="financial_report">Financial Reports</mat-option>
                 <mat-option value="market_analysis">Market Analysis</mat-option>
                 <mat-option value="compliance_report">Compliance Reports</mat-option>
@@ -1254,12 +1296,15 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewInit, AfterVie
         reranking_strategy: currentSettings.reranking_strategy,
         temperature: currentSettings.temperature,
         max_tokens: currentSettings.max_tokens,
-        commentary_mode: this.commentaryMode // Add commentary mode flag
+        commentary_mode: this.commentaryMode, // Add commentary mode flag
+        // Include conversation history for VBAM support documentation
+        conversation_history: this.selectedDocumentType === 'vbam_support' ? this.getLastConversations(5) : undefined
       };
 
       console.log('Sending chat request:', {
         document_type: chatRequest.document_type,
         commentary_mode: chatRequest.commentary_mode,
+        conversation_history_length: chatRequest.conversation_history?.length || 0,
         message: chatRequest.message.substring(0, 50) + '...'
       });
 
@@ -1333,10 +1378,19 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewInit, AfterVie
   }
 
   formatMessage(content: string): string {
-    // Basic markdown-like formatting
+    // Enhanced markdown-like formatting for VBAM responses including conversation summaries
     return content
-      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-      .replace(/\*(.*?)\*/g, '<em>$1</em>')
+      // Handle headers
+      .replace(/^### (.*$)/gm, '<h4 style="margin: 16px 0 8px 0; color: #2563eb; font-weight: 600;">$1</h4>')
+      .replace(/^## (.*$)/gm, '<h3 style="margin: 20px 0 12px 0; color: #1e40af; font-weight: 700; border-bottom: 2px solid #e5e7eb; padding-bottom: 4px;">$1</h3>')
+      .replace(/^# (.*$)/gm, '<h2 style="margin: 24px 0 16px 0; color: #1e3a8a; font-weight: 800;">$1</h2>')
+      // Handle bullet points
+      .replace(/^\* (.*$)/gm, '<div style="margin: 4px 0; padding-left: 16px; position: relative;"><span style="position: absolute; left: 0; top: 0; color: #6b7280;">•</span>$1</div>')
+      // Handle bold and italic
+      .replace(/\*\*(.*?)\*\*/g, '<strong style="color: #374151; font-weight: 600;">$1</strong>')
+      .replace(/\*(.*?)\*/g, '<em style="color: #4b5563; font-style: italic;">$1</em>')
+      // Handle line breaks
+      .replace(/\n\n/g, '<div style="margin: 12px 0;"></div>')
       .replace(/\n/g, '<br>');
   }
 
@@ -1368,6 +1422,7 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewInit, AfterVie
       'compliance_report': 'verified_user',
       'market_analysis': 'trending_up',
       'performance_attribution': 'analytics',
+      'vbam_support': 'precision_manufacturing',
       'other': 'description'
     };
     return iconMap[type] || 'description';
@@ -1443,6 +1498,57 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewInit, AfterVie
 
   private generateId(): string {
     return Math.random().toString(36).substring(2) + Date.now().toString(36);
+  }
+
+  /**
+   * Get the last N conversations (user-assistant pairs) for VBAM context memory
+   * This provides context awareness for follow-up questions
+   */
+  private getLastConversations(count: number): ChatMessage[] {
+    if (!this.messages || this.messages.length === 0) {
+      return [];
+    }
+
+    // Exclude the current user message that was just added
+    const previousMessages = this.messages.slice(0, -1);
+    
+    if (previousMessages.length === 0) {
+      return [];
+    }
+
+    // Get the last N*2 messages to ensure we get N complete conversations
+    const maxMessages = Math.min(count * 2, previousMessages.length);
+    const recentMessages = previousMessages.slice(-maxMessages);
+    
+    // Build conversation history ensuring we have complete user-assistant pairs
+    const conversationHistory: ChatMessage[] = [];
+    
+    for (let i = 0; i < recentMessages.length; i++) {
+      const msg = recentMessages[i];
+      conversationHistory.push(msg);
+    }
+    
+    // Log for debugging
+    console.log('VBAM Context: Sending conversation history:', {
+      total_messages: this.messages.length,
+      previous_messages: previousMessages.length,
+      history_messages: conversationHistory.length,
+      history_preview: conversationHistory.map(m => ({ role: m.role, content: m.content.substring(0, 50) + '...' }))
+    });
+    
+    return conversationHistory;
+  }
+
+  /**
+   * Check if the user is asking for a conversation summary
+   */
+  private isSummaryRequest(message: string): boolean {
+    const summaryKeywords = [
+      'summarize', 'summary', 'recap', 'review', 'what did we discuss',
+      'conversation summary', 'what have we talked about', 'overview of our chat'
+    ];
+    const lowerMessage = message.toLowerCase();
+    return summaryKeywords.some(keyword => lowerMessage.includes(keyword));
   }
 
   // File attachment methods
@@ -1637,6 +1743,7 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewInit, AfterVie
   getDocumentTypeName(type: string): string {
     const typeNames: { [key: string]: string } = {
       'performance_attribution': 'Performance Attribution',
+      'vbam_support': 'VBAM Support Documentation',
       'financial_report': 'Financial Report',
       'market_analysis': 'Market Analysis', 
       'compliance_report': 'Compliance Report',
@@ -1719,6 +1826,8 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewInit, AfterVie
       } else {
         return 'Ask specific questions (e.g., "What was the best performing sector?")';
       }
+    } else if (this.selectedDocumentType === 'vbam_support') {
+      return 'Ask about VBAM features (e.g., "What is Ret Stats in IPR?", "How does Factor Attribution work?")';
     }
     return 'Ask about your financial documents...';
   }

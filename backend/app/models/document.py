@@ -9,6 +9,7 @@ class DocumentType(str, Enum):
     COMPLIANCE_REPORT = "compliance_report"
     MARKET_ANALYSIS = "market_analysis"
     PERFORMANCE_ATTRIBUTION = "performance_attribution"
+    VBAM_SUPPORT = "vbam_support"
     OTHER = "other"
 
 class ConfidenceLevel(str, Enum):

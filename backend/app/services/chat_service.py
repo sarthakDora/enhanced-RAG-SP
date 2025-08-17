@@ -18,6 +18,7 @@ from .agent_orchestrator import MultiAgentOrchestrator
 from .router_service import RouterService, QueryType
 from .multi_agent_pipeline import MultiAgentPipeline
 from .attribution_prompt_service import AttributionPromptService, AttributionMode, AssetClass
+from .vbam_component_service import VBAMComponentService
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,9 @@ class ChatService:
         
         # Initialize attribution prompt service
         self.attribution_prompt_service = AttributionPromptService()
+        
+        # Initialize VBAM component service
+        self.vbam_service = VBAMComponentService(qdrant_service, ollama_service)
         
         # In-memory storage for sessions (in production, use a database)
         self.sessions: Dict[str, ChatSession] = {}
@@ -122,7 +126,132 @@ class ChatService:
                 if msg.role in ['user', 'assistant']
             ]
             
-            # Classify the query using router service
+            # Check if document type is explicitly specified for direct routing
+            document_type_filter = request.document_type or session.document_type
+            
+            # Handle VBAM Support queries directly without router classification
+            if document_type_filter == "vbam_support":
+                logger.info("DIRECT ROUTING: VBAM support documentation requested")
+                vbam_generation_start = time.time()
+                try:
+                    # Prepare conversation history for VBAM context
+                    conversation_context = None
+                    if request.conversation_history:
+                        # Convert ChatMessage objects to dict format for VBAM service
+                        conversation_context = [
+                            {
+                                'role': msg.role,
+                                'content': msg.content,
+                                'timestamp': msg.timestamp.isoformat() if hasattr(msg.timestamp, 'isoformat') else str(msg.timestamp)
+                            }
+                            for msg in request.conversation_history
+                        ]
+                        logger.info(f"VBAM: Using conversation history with {len(conversation_context)} messages")
+                    
+                    # Use VBAM service with conversation history
+                    vbam_result = await self.vbam_service.answer_component_question(
+                        question=request.message,
+                        conversation_history=conversation_context
+                    )
+                    
+                    if vbam_result.get("error"):
+                        logger.error(f"VBAM service error: {vbam_result}")
+                        final_answer = "I encountered an error while searching VBAM documentation. Please try rephrasing your question or check if VBAM documentation has been uploaded."
+                        sources = []
+                    else:
+                        final_answer = vbam_result.get("response", "No response generated")
+                        component = vbam_result.get("component", "Unknown")
+                        sections_referenced = vbam_result.get("sections_referenced", [])
+                        results_count = vbam_result.get("results_count", 0)
+                        
+                        # Enhance response with component context
+                        if component and component != "Unknown":
+                            final_answer = f"**{component} Documentation:**\n\n{final_answer}"
+                            if sections_referenced:
+                                final_answer += f"\n\n*Sections referenced: {', '.join(sections_referenced)}*"
+                        
+                        # Create sources from VBAM component result
+                        sources = []
+                        if results_count > 0:
+                            sources.append({
+                                'filename': f'{component} Documentation',
+                                'content': f"Source: {component} documentation",
+                                'document_type': 'vbam_support',
+                                'confidence': 0.9,
+                                'sections': sections_referenced
+                            })
+                    
+                    generation_time = (time.time() - vbam_generation_start) * 1000
+                    
+                    # Create response data structure for compatibility
+                    response_data = {
+                        "response": final_answer,
+                        "generation_time_ms": generation_time,
+                        "agent_metadata": {
+                            "total_agents_used": 1,
+                            "processing_time": generation_time / 1000,
+                            "confidence": 0.9,
+                            "agent_responses": [{"agent": "vbam_service", "success": True, "confidence": 0.9, "component": vbam_result.get("component")}]
+                        }
+                    }
+                    
+                    # Build complete prompt for display (VBAM case)
+                    complete_prompt = self._build_complete_prompt_display(
+                        system_prompt="VBAM Support Documentation Query Handler",
+                        user_message=request.message,
+                        context=f"VBAM Component: {vbam_result.get('component', 'Unknown')}\nSections Referenced: {', '.join(vbam_result.get('sections_referenced', []))}\nResults Found: {vbam_result.get('results_count', 0)}",
+                        assistant_response=response_data["response"]
+                    )
+                    
+                    # Create assistant message
+                    assistant_message = ChatMessage(
+                        message_id=str(uuid.uuid4()),
+                        session_id=session.session_id,
+                        role="assistant",
+                        content=response_data["response"],
+                        timestamp=datetime.now(),
+                        sources=self._convert_agent_sources_to_document_results(sources),
+                        confidence_score=response_data.get("agent_metadata", {}).get("confidence", 0.9),
+                        processing_time_ms=generation_time,
+                        prompt=complete_prompt,
+                        metadata=response_data.get("agent_metadata", {})
+                    )
+                    session.messages.append(assistant_message)
+                    
+                    # Update session
+                    session.updated_at = datetime.now()
+                    session.last_activity = datetime.now()
+                    
+                    # Cleanup old messages if necessary
+                    await self._cleanup_session_messages(session)
+                    
+                    total_time = (time.time() - start_time) * 1000
+                    
+                    # Create response
+                    response = ChatResponse(
+                        session_id=session.session_id,
+                        message_id=assistant_message.message_id,
+                        response=response_data["response"],
+                        sources=assistant_message.sources,
+                        search_time_ms=generation_time * 0.3,
+                        generation_time_ms=generation_time,
+                        total_time_ms=total_time,
+                        confidence_score=assistant_message.confidence_score,
+                        source_count=len(assistant_message.sources),
+                        context_used=bool(sources),
+                        message_count=len(session.messages),
+                        session_active=session.is_active,
+                        prompt=assistant_message.prompt
+                    )
+                    
+                    logger.info(f"VBAM Chat response generated for session {session.session_id} in {total_time:.2f}ms")
+                    return response
+                    
+                except Exception as e:
+                    logger.error(f"VBAM chat processing failed: {e}")
+                    # Fall through to normal processing
+            
+            # Classify the query using router service for other document types
             classification = self.router_service.classify_query(
                 query=request.message,
                 session_id=session.session_id,
@@ -183,6 +312,16 @@ class ChatService:
                 }
             }
             
+            # Build complete prompt for display (general case)
+            system_prompt_used = self._get_financial_system_prompt(custom_prompts, is_vbam_response=False)
+            context_for_display = self._build_context(sources, session) if sources else "No context available"
+            complete_prompt = self._build_complete_prompt_display(
+                system_prompt=system_prompt_used,
+                user_message=request.message,
+                context=context_for_display,
+                assistant_response=response_data["response"]
+            )
+            
             # Create assistant message
             assistant_message = ChatMessage(
                 message_id=str(uuid.uuid4()),
@@ -194,7 +333,7 @@ class ChatService:
                 confidence_score=response_data.get("agent_metadata", {}).get("confidence", 
                     self._calculate_response_confidence(sources, response_data["response"])),
                 processing_time_ms=generation_time,
-                prompt=agent_response.get("prompt", "Prompt not available"),
+                prompt=complete_prompt,
                 metadata=response_data.get("agent_metadata", {})
             )
             session.messages.append(assistant_message)
@@ -289,6 +428,12 @@ class ChatService:
             # For streaming, we'll use the old method with context building for now
             context = self._build_context(sources, session)
             
+            # Check if this is a VBAM response for special handling
+            is_vbam_response = any(
+                source.chunk_metadata and source.chunk_metadata.get("is_vbam_response", False) 
+                for source in sources
+            )
+            
             # Stream response
             collected_response = ""
             async for chunk in self.ollama_service.generate_response_stream(
@@ -296,10 +441,19 @@ class ChatService:
                 context=context,
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
-                system_prompt=self._get_financial_system_prompt(custom_prompts)
+                system_prompt=self._get_financial_system_prompt(custom_prompts, is_vbam_response)
             ):
                 collected_response += chunk
                 yield chunk
+            
+            # Build complete prompt for display (streaming case)
+            context_for_display = self._build_context(sources, session) if sources else "No context available"
+            complete_prompt = self._build_complete_prompt_display(
+                system_prompt=self._get_financial_system_prompt(custom_prompts, is_vbam_response),
+                user_message=request.message,
+                context=context_for_display,
+                assistant_response=collected_response
+            )
             
             # Add assistant message to session
             assistant_message = ChatMessage(
@@ -310,7 +464,7 @@ class ChatService:
                 timestamp=datetime.now(),
                 sources=sources,
                 confidence_score=self._calculate_response_confidence(sources, collected_response),
-                prompt="[Streaming response - prompt not captured in this mode]"
+                prompt=complete_prompt
             )
             session.messages.append(assistant_message)
             
@@ -357,6 +511,11 @@ class ChatService:
                 if "tags" in request.document_filters:
                     search_request.tags = request.document_filters["tags"]
             
+            # Handle VBAM Support queries using VBAM service
+            if document_type_filter == "vbam_support":
+                logger.info("Routing to VBAM service for VBAM support documentation")
+                return await self._handle_vbam_query(request, session)
+            
             # Determine target collection based on document type
             target_collection = None
             if document_type_filter:
@@ -397,46 +556,75 @@ class ChatService:
         """Build context from sources and chat history"""
         context_parts = []
         
-        # Add recent conversation history
-        recent_messages = session.messages[-6:]  # Last 3 exchanges
-        if len(recent_messages) > 2:  # Only if there's actual history
-            context_parts.append("CONVERSATION HISTORY:")
-            for msg in recent_messages[:-1]:  # Exclude the current user message
-                if msg.role == "user":
-                    context_parts.append(f"User: {msg.content}")
-                elif msg.role == "assistant":
-                    context_parts.append(f"Assistant: {msg.content[:200]}...")  # Truncate
-            context_parts.append("")
+        # Check if this is a VBAM response (special handling)
+        is_vbam_response = any(
+            source.chunk_metadata and source.chunk_metadata.get("is_vbam_response", False) 
+            for source in sources
+        )
         
-        # Add document sources
-        if sources:
-            context_parts.append("RELEVANT FINANCIAL DOCUMENTS:")
-            for i, source in enumerate(sources, 1):
-                doc_info = ""
-                if source.document_metadata:
-                    doc_parts = []
-                    if source.document_metadata.filename:
-                        doc_parts.append(f"File: {source.document_metadata.filename}")
-                    if source.document_metadata.document_type:
-                        doc_parts.append(f"Type: {source.document_metadata.document_type}")
-                    if source.document_metadata.fiscal_year:
-                        doc_parts.append(f"Year: {source.document_metadata.fiscal_year}")
-                    if source.document_metadata.company_name:
-                        doc_parts.append(f"Company: {source.document_metadata.company_name}")
-                    
-                    if doc_parts:
-                        doc_info = f" ({', '.join(doc_parts)})"
-                
-                context_parts.append(f"Source {i}{doc_info}:")
-                context_parts.append(source.content)
+        if is_vbam_response:
+            # For VBAM responses, use the content directly as it's already a full response
+            context_parts.append("VBAM SUPPORT DOCUMENTATION RESPONSE:")
+            for source in sources:
+                if source.chunk_metadata and source.chunk_metadata.get("is_vbam_response", False):
+                    component = source.chunk_metadata.get("vbam_component", "Unknown")
+                    context_parts.append(f"Component: {component}")
+                    context_parts.append(source.content)
+                    context_parts.append("")
+        else:
+            # Add recent conversation history for normal documents
+            recent_messages = session.messages[-6:]  # Last 3 exchanges
+            if len(recent_messages) > 2:  # Only if there's actual history
+                context_parts.append("CONVERSATION HISTORY:")
+                for msg in recent_messages[:-1]:  # Exclude the current user message
+                    if msg.role == "user":
+                        context_parts.append(f"User: {msg.content}")
+                    elif msg.role == "assistant":
+                        context_parts.append(f"Assistant: {msg.content[:200]}...")  # Truncate
                 context_parts.append("")
+            
+            # Add document sources
+            if sources:
+                context_parts.append("RELEVANT FINANCIAL DOCUMENTS:")
+                for i, source in enumerate(sources, 1):
+                    doc_info = ""
+                    if source.document_metadata:
+                        doc_parts = []
+                        if source.document_metadata.filename:
+                            doc_parts.append(f"File: {source.document_metadata.filename}")
+                        if source.document_metadata.document_type:
+                            doc_parts.append(f"Type: {source.document_metadata.document_type}")
+                        if source.document_metadata.fiscal_year:
+                            doc_parts.append(f"Year: {source.document_metadata.fiscal_year}")
+                        if source.document_metadata.company_name:
+                            doc_parts.append(f"Company: {source.document_metadata.company_name}")
+                        
+                        if doc_parts:
+                            doc_info = f" ({', '.join(doc_parts)})"
+                    
+                    context_parts.append(f"Source {i}{doc_info}:")
+                    context_parts.append(source.content)
+                    context_parts.append("")
         
         return "\n".join(context_parts)
 
-    def _get_financial_system_prompt(self, custom_prompts: Dict[str, str] = None) -> str:
+    def _get_financial_system_prompt(self, custom_prompts: Dict[str, str] = None, is_vbam_response: bool = False) -> str:
         """Get system prompt - custom if enabled, otherwise general purpose"""
         if custom_prompts and custom_prompts.get('system_prompt'):
             return custom_prompts['system_prompt']
+        
+        if is_vbam_response:
+            # Special prompt for VBAM responses that are already complete
+            return """You are a VBAM (Virtus Business Application Manager) support specialist.
+
+The context contains a pre-generated response from the VBAM documentation system. 
+
+Guidelines:
+1. Present the VBAM response clearly and helpfully to the user
+2. If the response is detailed, you may summarize key points while preserving important details
+3. Maintain the professional tone appropriate for financial software support
+4. If the VBAM response indicates no information was found, acknowledge this and suggest alternative approaches
+5. You may add helpful context about VBAM functionality when appropriate"""
         
         # Default general-purpose prompt with basic guard rails (when custom prompts are disabled)
         return """You are a helpful AI assistant that analyzes documents and answers questions based on provided context.
@@ -483,6 +671,33 @@ Guidelines:
         )
         
         return min(0.95, max(0.1, combined_confidence))  # Clamp between 0.1 and 0.95
+
+    def _build_complete_prompt_display(self, system_prompt: str, user_message: str, 
+                                     context: str, assistant_response: str) -> str:
+        """Build complete prompt display that shows the entire prompt sent to LLM including system, user, and context"""
+        prompt_sections = []
+        
+        # System Prompt Section
+        prompt_sections.append("=== SYSTEM PROMPT ===")
+        prompt_sections.append(system_prompt)
+        prompt_sections.append("")
+        
+        # Context Section (if available)
+        if context and context.strip() and context != "No context available":
+            prompt_sections.append("=== CONTEXT ===")
+            prompt_sections.append(context)
+            prompt_sections.append("")
+        
+        # User Message Section
+        prompt_sections.append("=== USER MESSAGE ===")
+        prompt_sections.append(user_message)
+        prompt_sections.append("")
+        
+        # Assistant Response Section (for completeness)
+        prompt_sections.append("=== ASSISTANT RESPONSE ===")
+        prompt_sections.append(assistant_response)
+        
+        return "\n".join(prompt_sections)
 
     def _group_sources_by_file(self, agent_sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Group sources by filename, keeping only the highest scoring chunk per file"""
@@ -657,13 +872,20 @@ Guidelines:
                 personal_info = classification.get("personal_info_extracted", {})
                 response_text = self.router_service.format_personal_info_response(personal_info)
                 
+                complete_prompt = self._build_complete_prompt_display(
+                    system_prompt="Personal information storage handler",
+                    user_message=request.message,
+                    context="No additional context needed for personal information storage",
+                    assistant_response=response_text
+                )
+                
                 return {
                     "answer": response_text,
                     "confidence": 0.95,
                     "sources": [],
                     "total_agents_used": 1,
                     "processing_time": (time.time() - generation_start),
-                    "prompt": f"SYSTEM: Personal information storage handler\n\nUSER: {request.message}\n\nASSISTANT:",
+                    "prompt": complete_prompt,
                     "agent_responses": [{"agent": "personal_info_handler", "success": True, "confidence": 0.95}]
                 }
             
@@ -671,13 +893,20 @@ Guidelines:
                 # Handle personalized greetings
                 response_text = self.router_service.get_personalized_greeting(session.session_id)
                 
+                complete_prompt = self._build_complete_prompt_display(
+                    system_prompt="Personalized greeting handler",
+                    user_message=request.message,
+                    context=f"User session memory for personalized greeting: {session.session_id}",
+                    assistant_response=response_text
+                )
+                
                 return {
                     "answer": response_text,
                     "confidence": 0.9,
                     "sources": [],
                     "total_agents_used": 1,
                     "processing_time": (time.time() - generation_start),
-                    "prompt": f"SYSTEM: Personalized greeting handler\n\nUSER: {request.message}\n\nASSISTANT:",
+                    "prompt": complete_prompt,
                     "agent_responses": [{"agent": "greeting_handler", "success": True, "confidence": 0.9}]
                 }
             
@@ -714,13 +943,21 @@ Guidelines:
         except Exception as e:
             logger.error(f"Route processing failed for {routing_decision}: {e}")
             # Ultimate fallback - simple response
+            error_response = "I encountered an error processing your request. Please try rephrasing your question or check if the system is properly configured."
+            complete_prompt = self._build_complete_prompt_display(
+                system_prompt="Error fallback handler",
+                user_message=request.message,
+                context=f"Error occurred during processing: {str(e)}",
+                assistant_response=error_response
+            )
+            
             return {
-                "answer": "I encountered an error processing your request. Please try rephrasing your question or check if the system is properly configured.",
+                "answer": error_response,
                 "confidence": 0.1,
                 "sources": [],
                 "total_agents_used": 1,
                 "processing_time": (time.time() - generation_start),
-                "prompt": f"SYSTEM: Error fallback handler\n\nUSER: {request.message}\n\nASSISTANT:",
+                "prompt": complete_prompt,
                 "agent_responses": [{"agent": "error_fallback", "success": False, "confidence": 0.1, "error": str(e)}]
             }
     
@@ -912,26 +1149,43 @@ Guidelines:
             )
             
             disclaimer = "\n\n*Note: This response is based on general knowledge, not specific uploaded documents.*"
+            full_response = direct_response["response"] + disclaimer
+            
+            # Build complete prompt for display
+            complete_prompt = self._build_complete_prompt_display(
+                system_prompt=system_prompt,
+                user_message=request.message,
+                context=personal_context if personal_context else "No specific document context available",
+                assistant_response=full_response
+            )
             
             return {
-                "answer": direct_response["response"] + disclaimer,
+                "answer": full_response,
                 "confidence": 0.7,
                 "sources": [],
                 "total_agents_used": 1,
                 "processing_time": (time.time() - generation_start),
-                "prompt": direct_response.get("prompt", "Prompt not available"),
+                "prompt": complete_prompt,
                 "agent_responses": [{"agent": "general_knowledge", "success": True, "confidence": 0.7}]
             }
             
         except Exception as e:
             logger.error(f"General query processing failed: {e}")
+            error_response = "I encountered an error while processing your question. Please try again."
+            complete_prompt = self._build_complete_prompt_display(
+                system_prompt="General query error handler",
+                user_message=request.message,
+                context=f"Error occurred: {str(e)}",
+                assistant_response=error_response
+            )
+            
             return {
-                "answer": "I encountered an error while processing your question. Please try again.",
+                "answer": error_response,
                 "confidence": 0.1,
                 "sources": [],
                 "total_agents_used": 1,
                 "processing_time": (time.time() - generation_start),
-                "prompt": f"SYSTEM: General query error handler\n\nUSER: {request.message}\n\nASSISTANT:",
+                "prompt": complete_prompt,
                 "agent_responses": [{"agent": "error_handler", "success": False, "confidence": 0.1}]
             }
     
@@ -1032,6 +1286,15 @@ Guidelines:
                 system_prompt=attribution_prompt
             )
             
+            # Build complete prompt for display (attribution commentary)
+            context_summary = f"Attribution Data Sources:\n" + "\n".join([f"- {chunk['filename']}" for chunk in document_chunks[:5]])
+            complete_prompt = self._build_complete_prompt_display(
+                system_prompt=attribution_prompt,
+                user_message=request.message,
+                context=context_summary,
+                assistant_response=response_data["response"]
+            )
+            
             return {
                 "answer": response_data["response"],
                 "confidence": 0.9,  # High confidence for structured commentary
@@ -1046,7 +1309,7 @@ Guidelines:
                 ],
                 "total_agents_used": 1,
                 "processing_time": (time.time() - start_time),
-                "prompt": attribution_prompt,
+                "prompt": complete_prompt,
                 "agent_responses": [{"agent": "attribution_commentary", "success": True, "confidence": 0.9, "asset_class": asset_class_str}]
             }
             
@@ -1140,13 +1403,21 @@ When answering about performance attribution data:
                 system_prompt=system_prompt
             )
             
+            # Build complete prompt for display (attribution Q&A)
+            complete_prompt = self._build_complete_prompt_display(
+                system_prompt=system_prompt,
+                user_message=request.message,
+                context=context,
+                assistant_response=response_data["response"]
+            )
+            
             return {
                 "answer": response_data["response"],
                 "confidence": 0.8,  # Good confidence for Q&A with sources
                 "sources": sources,  # Return actual DocumentSearchResult objects
                 "total_agents_used": 1,
                 "processing_time": (time.time() - start_time),
-                "prompt": response_data.get("prompt", system_prompt),
+                "prompt": complete_prompt,
                 "agent_responses": [{"agent": "document_qa", "success": True, "confidence": 0.8, "sources_found": len(sources)}]
             }
             
@@ -1161,3 +1432,114 @@ When answering about performance attribution data:
                 "prompt": "Attribution Q&A error",
                 "agent_responses": [{"agent": "attribution_qa_error", "success": False, "confidence": 0.1, "error": str(e)}]
             }
+
+    async def _handle_vbam_query(self, request: ChatRequest, session: ChatSession) -> List[DocumentSearchResult]:
+        """Handle VBAM support documentation queries using VBAM component service"""
+        try:
+            start_time = time.time()
+            logger.info(f"VBAM Query: {request.message}")
+            
+            # Prepare conversation history for VBAM context
+            conversation_context = None
+            if request.conversation_history:
+                # Convert ChatMessage objects to dict format for VBAM service
+                conversation_context = [
+                    {
+                        'role': msg.role,
+                        'content': msg.content,
+                        'timestamp': msg.timestamp.isoformat() if hasattr(msg.timestamp, 'isoformat') else str(msg.timestamp)
+                    }
+                    for msg in request.conversation_history
+                ]
+                logger.info(f"VBAM: Using conversation history with {len(conversation_context)} messages")
+            
+            # Use VBAM service with conversation history
+            vbam_result = await self.vbam_service.answer_component_question(
+                question=request.message,
+                conversation_history=conversation_context
+            )
+            
+            if vbam_result.get("error"):
+                logger.error(f"VBAM service error: {vbam_result}")
+                return []
+            
+            component = vbam_result.get("component", "Unknown")
+            sections_referenced = vbam_result.get("sections_referenced", [])
+            results_count = vbam_result.get("results_count", 0)
+            vbam_response = vbam_result.get("response", "")
+            
+            # Create DocumentSearchResult objects for compatibility with chat service
+            sources = []
+            if results_count > 0 and vbam_response:
+                from ..models.document import DocumentMetadata, DocumentSearchResult, ConfidenceLevel, DocumentType
+                
+                metadata = DocumentMetadata(
+                    filename=f'{component}_Documentation.txt',
+                    file_size=len(vbam_response),
+                    file_type='.txt',
+                    document_type=DocumentType.VBAM_SUPPORT,
+                    upload_timestamp=datetime.now(),
+                    total_pages=1,
+                    total_chunks=results_count,
+                    has_financial_data=True,
+                    confidence_score=0.9
+                )
+                
+                # Include the actual VBAM response as the source content so it gets displayed
+                result = DocumentSearchResult(
+                    chunk_id=f"vbam_{component.lower().replace(' ', '_')}",
+                    document_id=f"vbam_{component.lower().replace(' ', '_')}_doc",
+                    content=vbam_response,  # Use actual response as content for direct display
+                    score=0.9,
+                    confidence_level=ConfidenceLevel.HIGH,
+                    document_metadata=metadata,
+                    chunk_metadata={
+                        "vbam_component": component,
+                        "sections_referenced": sections_referenced,
+                        "results_count": results_count,
+                        "response_time": time.time() - start_time,
+                        "is_vbam_response": True
+                    }
+                )
+                sources.append(result)
+            elif component and not vbam_result.get("error"):
+                # Even if no results, create a source showing that we tried to find info for this component
+                from ..models.document import DocumentMetadata, DocumentSearchResult, ConfidenceLevel, DocumentType
+                
+                metadata = DocumentMetadata(
+                    filename=f'{component}_Documentation.txt',
+                    file_size=100,
+                    file_type='.txt',
+                    document_type=DocumentType.VBAM_SUPPORT,
+                    upload_timestamp=datetime.now(),
+                    total_pages=1,
+                    total_chunks=0,
+                    has_financial_data=False,
+                    confidence_score=0.3
+                )
+                
+                no_result_message = vbam_response if vbam_response else f"No specific information found in {component} documentation for this query."
+                
+                result = DocumentSearchResult(
+                    chunk_id=f"vbam_{component.lower().replace(' ', '_')}_no_result",
+                    document_id=f"vbam_{component.lower().replace(' ', '_')}_doc",
+                    content=no_result_message,
+                    score=0.3,
+                    confidence_level=ConfidenceLevel.LOW,
+                    document_metadata=metadata,
+                    chunk_metadata={
+                        "vbam_component": component,
+                        "sections_referenced": [],
+                        "results_count": 0,
+                        "response_time": time.time() - start_time,
+                        "is_vbam_response": True
+                    }
+                )
+                sources.append(result)
+            
+            logger.info(f"VBAM query completed in {(time.time() - start_time):.2f}s, found {len(sources)} sources")
+            return sources
+            
+        except Exception as e:
+            logger.error(f"Error in VBAM query handler: {e}")
+            return []

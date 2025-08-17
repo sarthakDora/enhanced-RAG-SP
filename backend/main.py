@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from app.core.config import settings
 from app.routers import documents, chat, health, attribution, viz_demo
 from app.routers import settings as settings_router
+from app.routers import vbam_support_doc
 from app.services.qdrant_service import QdrantService
 from app.services.ollama_service import OllamaService
 
@@ -160,6 +161,7 @@ app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 app.include_router(attribution.router, prefix="/api", tags=["attribution"])
 app.include_router(viz_demo.router, prefix="/api", tags=["visualization-demo"])
 app.include_router(settings_router.router, prefix="/api", tags=["settings"])
+app.include_router(vbam_support_doc.router, prefix="/api/vbam", tags=["vbam"])
 
 @app.get("/")
 async def root():
@@ -184,7 +186,7 @@ if __name__ == "__main__":
         limit_concurrency=100,
         timeout_keep_alive=30,
         # Additional timeout settings for large files
-        timeout_notify=300,  # 5 minutes for notifications
+        # timeout_notify=300,  # 5 minutes for notifications
         h11_max_incomplete_event_size=1073741824,  # 1GB for large uploads
         # Override the default body size limit
         server_header=False,
