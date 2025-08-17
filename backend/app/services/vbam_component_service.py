@@ -900,8 +900,8 @@ class VBAMComponentService:
                 if conversation_history and len(conversation_history) > 0:
                     logger.info(f"VBAM: Building summary prompt with {len(conversation_history)} messages")
                     prompt = self._build_summary_prompt(conversation_history, question)
-                    system_prompt = """You are a VBAM support specialist creating conversation summaries. 
-Provide clear, structured summaries of VBAM-related discussions, highlighting key questions asked and answers provided."""
+                    system_prompt = """You are an AI assistant that creates concise, intelligent conversation summaries. 
+Follow industry best practices: be brief, focus only on actual content discussed, avoid adding extra information, and highlight key outcomes."""
                     
                     # Generate summary response
                     ollama_response = await self.ollama.generate_response(
@@ -1046,46 +1046,36 @@ When provided with conversation history, use it to understand context and mainta
         return "\n".join(prompt_parts)
 
     def _build_summary_prompt(self, conversation_history: List, question: str) -> str:
-        """Build prompt for conversation summary requests"""
+        """Build prompt for conversation summary requests - industry standard concise format"""
         prompt_parts = [
-            "Please provide a comprehensive summary of our VBAM-related conversation.",
+            "Summarize this VBAM support conversation concisely and intelligently.",
             "",
-            "CONVERSATION HISTORY:"
+            "CONVERSATION:"
         ]
         
-        # Add conversation history with better formatting
-        conversation_count = 0
-        for i, msg in enumerate(conversation_history):
+        # Add only the actual conversation exchanges
+        for msg in conversation_history:
             role = msg.get('role', 'unknown')
-            content = msg.get('content', '')
+            content = msg.get('content', '').strip()
             
             if role == 'user':
-                conversation_count += 1
-                prompt_parts.append(f"\n=== Conversation {conversation_count} ===")
-                prompt_parts.append(f"User Question: {content}")
+                prompt_parts.append(f"Q: {content}")
             elif role == 'assistant':
-                # Limit assistant response length for summary context
-                truncated_content = content[:300] + "..." if len(content) > 300 else content
-                prompt_parts.append(f"Assistant Response: {truncated_content}")
+                # Extract key points from assistant response, limit length
+                key_content = content[:200] + "..." if len(content) > 200 else content
+                prompt_parts.append(f"A: {key_content}")
         
         prompt_parts.extend([
             "",
-            f"USER SUMMARY REQUEST: {question}",
-            "",
             "INSTRUCTIONS:",
-            "1. Create a well-structured summary with clear sections",
-            "2. Use the following format:",
-            "   ## Conversation Summary",
-            "   ### VBAM Components Discussed:",
-            "   ### Key Topics Covered:",
-            "   ### Main Questions & Answers:",
-            "   ### Important Details:",
-            "3. Group related questions and topics together",
-            "4. Highlight specific VBAM components (IPR, Analytics Report, Factsheet, Holdings and Risk) discussed",
-            "5. Include the main questions asked and key answers provided",
-            "6. Use bullet points and clear formatting for readability",
-            "7. Focus on actionable information and important VBAM functionality details",
-            "8. If no meaningful conversation exists, say so clearly",
+            "- Create a brief, intelligent summary focusing ONLY on actual questions asked and answers provided",
+            "- Use this simple format:",
+            "  **Topics Discussed:** [list main VBAM topics]",
+            "  **Key Exchanges:**",
+            "  - Q: [user question] - A: [brief answer]",
+            "- Be concise - maximum 3-4 sentences per section",
+            "- Only include information actually discussed, don't add extra components or details",
+            "- Focus on actionable information the user received",
             "",
             "SUMMARY:"
         ])
