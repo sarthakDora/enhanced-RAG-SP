@@ -134,13 +134,11 @@ export class ApiService {
   }
 
   // Health monitoring
-  private async checkConnectionStatus() {
-    try {
-      const response = await this.checkHealth().toPromise();
-      this.connectionStatus.next(true);
-    } catch (error) {
-      this.connectionStatus.next(false);
-    }
+  private checkConnectionStatus() {
+    this.checkHealth().subscribe({
+      next: () => this.connectionStatus.next(true),
+      error: () => this.connectionStatus.next(false)
+    });
   }
 
   startHealthMonitoring() {
@@ -209,5 +207,76 @@ export class ApiService {
 
   generateAttributionVisualization(formData: FormData): Observable<any> {
     return this.http.post(`${this.baseUrl}/attribution/viz-working`, formData);
+  }
+
+  // VBAM Component API
+  initializeVBAMCollections(): Observable<any> {
+    return this.http.post(`${this.baseUrl}/vbam/initialize`, {});
+  }
+
+  createVBAMSampleData(): Observable<any> {
+    return this.http.post(`${this.baseUrl}/vbam/sample-data`, {});
+  }
+
+  uploadVBAMDocument(component: string, file: File, description?: string): Observable<any> {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (description) {
+      formData.append('description', description);
+    }
+    // Don't set Content-Type header for FormData - let browser set it with boundary
+    return this.http.post(`${this.baseUrl}/vbam/upload/${component}`, formData);
+  }
+
+  askVBAMQuestion(question: string, component?: string): Observable<any> {
+    const payload: any = { question };
+    if (component) {
+      payload.component = component;
+    }
+    return this.http.post(`${this.baseUrl}/vbam/ask`, payload, {
+      headers: this.getHeaders()
+    });
+  }
+
+  searchVBAMComponent(component: string, question: string, topK: number = 10): Observable<any> {
+    const payload = { question, top_k: topK };
+    return this.http.post(`${this.baseUrl}/vbam/search/${component}`, payload, {
+      headers: this.getHeaders()
+    });
+  }
+
+  routeVBAMQuestion(question: string): Observable<any> {
+    return this.http.post(`${this.baseUrl}/vbam/route`, { question }, {
+      headers: this.getHeaders()
+    });
+  }
+
+  getVBAMComponents(): Observable<any> {
+    return this.http.get(`${this.baseUrl}/vbam/components`);
+  }
+
+  getVBAMStats(): Observable<any> {
+    return this.http.get(`${this.baseUrl}/vbam/stats`);
+  }
+
+  // Generic API methods for flexibility
+  get(endpoint: string): Promise<any> {
+    return this.http.get(`${this.baseUrl}${endpoint}`).toPromise() as Promise<any>;
+  }
+
+  post(endpoint: string, data?: any): Promise<any> {
+    return this.http.post(`${this.baseUrl}${endpoint}`, data, {
+      headers: this.getHeaders()
+    }).toPromise() as Promise<any>;
+  }
+
+  put(endpoint: string, data?: any): Promise<any> {
+    return this.http.put(`${this.baseUrl}${endpoint}`, data, {
+      headers: this.getHeaders()
+    }).toPromise() as Promise<any>;
+  }
+
+  delete(endpoint: string): Promise<any> {
+    return this.http.delete(`${this.baseUrl}${endpoint}`).toPromise() as Promise<any>;
   }
 }

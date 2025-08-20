@@ -55,6 +55,9 @@ class ChatRequest(BaseModel):
     # Attribution mode toggle
     commentary_mode: bool = False
     
+    # VBAM context memory - last 5 conversations for context awareness
+    conversation_history: Optional[List[ChatMessage]] = None
+    
     # Search parameters
     use_rag: bool = True
     top_k: int = Field(default=10, le=50)

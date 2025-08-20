@@ -511,9 +511,11 @@ class QdrantService:
             raise
 
     async def get_collection_stats(self) -> Dict[str, Any]:
-        """Get collection statistics from all collections"""
+        """Get collection statistics from all collections including VBAM collections"""
         try:
-            all_collections = [self.collection_name] + list(self.category_collections.values())
+            # Include main collection, category collections, and VBAM collections
+            vbam_collections = ["ipr_docs", "analytics_docs", "factsheet_docs", "holdings_docs"]
+            all_collections = [self.collection_name] + list(self.category_collections.values()) + vbam_collections
             
             total_points = 0
             total_indexed = 0
@@ -579,9 +581,11 @@ class QdrantService:
             return False
 
     async def get_all_points(self) -> List[Dict[str, Any]]:
-        """Get all points from all collections"""
+        """Get all points from all collections including VBAM collections"""
         try:
-            all_collections = [self.collection_name] + list(self.category_collections.values())
+            # Include main collection, category collections, and VBAM collections
+            vbam_collections = ["ipr_docs", "analytics_docs", "factsheet_docs", "holdings_docs"]
+            all_collections = [self.collection_name] + list(self.category_collections.values()) + vbam_collections
             all_points = []
             
             for collection_name in all_collections:

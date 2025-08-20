@@ -1,0 +1,36 @@
+Investment Performance Report (IPR) Documentation
+
+Overview
+The IPR report analyzes portfolio and benchmark performance and return statistics over selectable time periods. This comprehensive tool provides detailed insights into investment performance across multiple dimensions.
+
+Inputs
+The IPR system requires the following inputs for proper operation:
+- Portfolio or Composite selection (if Account Type = All)
+- Marketable Composite (if Account Type = Marketable Composite)
+- Return basis selection (Gross or Net Returns)
+- Time period definition
+- Reporting frequency (Monthly or Quarterly)
+
+Ret Stats
+The Ret Stats section provides comprehensive return and risk analysis including:
+- Cumulative and Annualized Returns across multiple timeframes
+- Risk Metrics: Standard Deviation, Volatility measures
+- Performance Ratios: Sharpe Ratio, Sortino Ratio, Treynor Ratio
+- Information Ratio and tracking error analysis
+- Alpha and Beta calculations vs benchmark
+- R-Squared correlation coefficients
+- Available timeframes: 3m, 6m, 1-10y, Since Inception
+
+Ret Stats 2
+Extended performance metrics including:
+- Capture Ratios (Up/Down market performance)
+- Batting Average (percentage of outperformance periods)
+- Skewness and Kurtosis distribution measures
+- Risk-adjusted performance indicators
+
+Trailing Stats
+Rolling performance and volatility analysis:
+- Trailing performance calculations
+- Moving average analysis
+- Volatility trending
+- Risk metric evolution over time

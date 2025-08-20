@@ -243,6 +243,7 @@ async def list_documents(request: Request):
         # Get all points from Qdrant collection and category collections
         all_points = await qdrant_service.get_all_points()
         logger.info(f"Found {len(all_points) if all_points else 0} total points across all collections")
+        print(f"DEBUG: Found {len(all_points) if all_points else 0} total points across all collections")
         
         if not all_points:
             return {
@@ -250,7 +251,7 @@ async def list_documents(request: Request):
                 "total_count": 0,
                 "debug_info": {
                     "collection_name": qdrant_service.collection_name,
-                    "collection_exists": collection_exists,
+                    "collection_exists": main_collection_exists,
                     "points_found": 0,
                     "error": "No points found in any collection",
                     "collections_checked": [qdrant_service.collection_name] + list(qdrant_service.category_collections.values())
@@ -276,13 +277,14 @@ async def list_documents(request: Request):
             # Get metadata from the first chunk
             first_chunk = chunks[0]
             
+            # Regular document structure
             documents.append({
                 "document_id": doc_id,
                 "filename": first_chunk.get("filename", f"document_{doc_id[:8]}.txt"),
                 "document_type": first_chunk.get("document_type", "other"),
                 "upload_timestamp": first_chunk.get("upload_timestamp", datetime.now().isoformat()),
                 "total_pages": first_chunk.get("total_pages", 1),
-                "total_chunks": len(chunks),  # Actual count from Qdrant
+                "total_chunks": len(chunks),
                 "has_financial_data": first_chunk.get("has_financial_data", False),
                 "confidence_score": first_chunk.get("confidence_score", 0.5),
                 "tags": first_chunk.get("tags", [])
@@ -599,21 +601,29 @@ async def get_document_stats(request: Request):
             
             # Document type breakdown
             doc_type = first_chunk.get("document_type", "other")
-            type_counts[doc_type] = type_counts.get(doc_type, 0) + 1
-            
-            # Financial data stats
             if first_chunk.get("has_financial_data", False):
                 docs_with_financial_data += 1
+            
+            type_counts[doc_type] = type_counts.get(doc_type, 0) + 1
         
         total_docs = len(document_chunks)
         total_chunks = len(all_points)
+        
+        # Get collection info from Qdrant
+        collection_stats = await qdrant_service.get_collection_stats()
         
         return {
             "total_documents": total_docs,
             "total_chunks": total_chunks,
             "documents_with_financial_data": docs_with_financial_data,
             "document_types": type_counts,
-            "average_chunks_per_document": total_chunks / total_docs if total_docs > 0 else 0
+            "average_chunks_per_document": total_chunks / total_docs if total_docs > 0 else 0,
+            "qdrant_info": {
+                "total_points_in_qdrant": collection_stats.get("total_points", 0),
+                "indexed_points": collection_stats.get("indexed_points", 0),
+                "collections_status": collection_stats.get("collection_details", {}),
+                "qdrant_status": collection_stats.get("status", "unknown")
+            }
         }
         
     except Exception as e:
@@ -624,7 +634,13 @@ async def get_document_stats(request: Request):
             "total_chunks": 0,
             "documents_with_financial_data": 0,
             "document_types": {},
-            "average_chunks_per_document": 0
+            "average_chunks_per_document": 0,
+            "qdrant_info": {
+                "total_points_in_qdrant": 0,
+                "indexed_points": 0,
+                "collections_status": {},
+                "qdrant_status": "error"
+            }
         }
 
 @router.get("/debug/clear-cache", response_model=Dict[str, Any])

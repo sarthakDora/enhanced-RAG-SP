@@ -1,0 +1,11 @@
+IPR Test Documentation
+
+This is a test file to verify that the VBAM upload fix is working correctly.
+
+Investment Performance Report (IPR) Details:
+- Portfolio analysis and benchmarking
+- Return statistics and risk metrics
+- Performance attribution analysis
+- Comprehensive reporting functionality
+
+This file should upload successfully to the IPR component collection.

@@ -48,6 +48,9 @@ export interface ChatRequest {
   // Attribution mode toggle
   commentary_mode?: boolean;
   
+  // VBAM context memory - last 5 conversations for context awareness
+  conversation_history?: ChatMessage[];
+  
   use_rag?: boolean;
   top_k?: number;
   rerank_top_k?: number;

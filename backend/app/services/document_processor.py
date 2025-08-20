@@ -18,6 +18,13 @@ try:
 except ImportError:
     PANDAS_AVAILABLE = False
     print("Warning: pandas not available")
+
+try:
+    from docx import Document as DocxDocument
+    PYTHON_DOCX_AVAILABLE = True
+except ImportError:
+    PYTHON_DOCX_AVAILABLE = False
+    print("Warning: python-docx not available")
 from pathlib import Path
 import logging
 import re
@@ -95,7 +102,7 @@ class FinancialDocumentProcessor:
             elif file_path.lower().endswith('.txt'):
                 content_data = await self._process_txt(file_path)
             elif file_path.lower().endswith('.docx'):
-                content_data = await self._process_txt(file_path)  # Simple text processing for now
+                content_data = await self._process_docx(file_path)
             elif file_path.lower().endswith(('.xlsx', '.xls')):
                 content_data = await self._process_excel(file_path)
             else:
@@ -257,6 +264,153 @@ class FinancialDocumentProcessor:
             content_data['text_content'] = text_content
         
         return content_data
+
+    async def _process_docx(self, file_path: str) -> Dict[str, Any]:
+        """Process DOCX file using python-docx library"""
+        content_data = {
+            'text_content': '',
+            'tables': [],
+            'pages': [],
+            'images': [],
+            'metadata': {},
+            'structure': {}
+        }
+        
+        try:
+            if not PYTHON_DOCX_AVAILABLE:
+                logger.warning("python-docx not available, falling back to text processing")
+                return await self._process_txt(file_path)
+            
+            logger.info(f"Processing DOCX file: {file_path}")
+            doc = DocxDocument(file_path)
+            
+            # Extract paragraphs while preserving formatting and structure
+            paragraphs = []
+            for paragraph in doc.paragraphs:
+                text = paragraph.text.strip()
+                if text:
+                    # Clean up encoding issues - replace problematic characters
+                    text = self._clean_docx_text(text)
+                    
+                    # Check if this might be a header based on formatting
+                    is_header = False
+                    
+                    # Check if paragraph has heading style
+                    if paragraph.style.name.startswith('Heading'):
+                        is_header = True
+                    
+                    # Check if text is short and might be a header
+                    elif len(text.split()) <= 10 and not text.endswith('.'):
+                        # Likely a header if it's short and doesn't end with period
+                        is_header = True
+                    
+                    # For headers, ensure they're on their own line with extra spacing
+                    if is_header:
+                        paragraphs.append(f"\n{text}\n")
+                    else:
+                        paragraphs.append(text)
+            
+            # Extract tables
+            table_texts = []
+            for table_idx, table in enumerate(doc.tables):
+                table_data = []
+                headers = []
+                
+                for row_idx, row in enumerate(table.rows):
+                    row_data = []
+                    for cell in row.cells:
+                        cell_text = cell.text.strip() if cell.text else ""
+                        # Clean up encoding issues in table cells too
+                        cell_text = self._clean_docx_text(cell_text)
+                        row_data.append(cell_text)
+                    
+                    if row_idx == 0:
+                        headers = row_data
+                    else:
+                        # Convert row to dictionary using headers
+                        if len(headers) == len(row_data):
+                            row_dict = dict(zip(headers, row_data))
+                            table_data.append(row_dict)
+                        else:
+                            # Fallback for mismatched columns
+                            row_dict = {f"Column_{i}": value for i, value in enumerate(row_data)}
+                            table_data.append(row_dict)
+                
+                if table_data:
+                    content_data['tables'].append({
+                        'table_id': f"docx_table_{table_idx}",
+                        'page': 1,  # DOCX doesn't have clear page boundaries
+                        'data': table_data,
+                        'shape': [len(table_data), len(headers) if headers else 0],
+                        'extraction_method': 'python-docx',
+                        'headers': headers
+                    })
+                    
+                    # Create text representation of table
+                    table_text = f"\n\nTable {table_idx + 1}:\n"
+                    if headers:
+                        table_text += " | ".join(headers) + "\n"
+                        table_text += "-" * 50 + "\n"
+                    for row_dict in table_data[:10]:  # Limit to first 10 rows
+                        table_text += " | ".join(str(v) for v in row_dict.values()) + "\n"
+                    table_texts.append(table_text)
+            
+            # Combine all text content while preserving structure
+            all_text = "\n".join(paragraphs)  # Use single newlines to preserve structure
+            if table_texts:
+                all_text += "\n\n" + "\n".join(table_texts)
+            
+            content_data['text_content'] = all_text
+            
+            # Create a single page entry for the document
+            page_data = {
+                'page_number': 1,
+                'text': all_text,
+                'images': 0,  # Could be enhanced to count images
+                'blocks': [],
+                'bbox': None
+            }
+            content_data['pages'].append(page_data)
+            
+            logger.info(f"DOCX processing complete: {len(paragraphs)} paragraphs, {len(content_data['tables'])} tables, {len(all_text)} chars")
+            
+        except Exception as e:
+            logger.error(f"Error processing DOCX file {file_path}: {e}")
+            # Fallback to text processing
+            logger.info("Falling back to text processing for DOCX file")
+            return await self._process_txt(file_path)
+        
+        return content_data
+
+    def _clean_docx_text(self, text: str) -> str:
+        """Clean up text from DOCX files to fix encoding issues"""
+        if not text:
+            return text
+        
+        # Replace common problematic Unicode characters
+        replacements = {
+            '� ': '• ',  # Replace unknown chars with bullet points
+            '�': '•',    # Single unknown char to bullet
+            '\u2022': '• ',  # Ensure bullet points have space
+            '\u2013': '- ',  # En dash to hyphen
+            '\u2014': '- ',  # Em dash to hyphen
+            '\u201c': '"',   # Left double quote
+            '\u201d': '"',   # Right double quote
+            '\u2018': "'",   # Left single quote
+            '\u2019': "'",   # Right single quote
+            '\u00a0': ' ',   # Non-breaking space
+        }
+        
+        # Apply replacements
+        cleaned_text = text
+        for old, new in replacements.items():
+            cleaned_text = cleaned_text.replace(old, new)
+        
+        # Remove any remaining problematic characters and normalize whitespace
+        cleaned_text = re.sub(r'[^\w\s\-.,;:!?()\[\]{}"\'/|\\&@#$%^*+=<>~`]', ' ', cleaned_text)
+        cleaned_text = re.sub(r'\s+', ' ', cleaned_text).strip()
+        
+        return cleaned_text
 
     async def _process_excel(self, file_path: str) -> Dict[str, Any]:
         """Process Excel file (both .xlsx and .xls)"""

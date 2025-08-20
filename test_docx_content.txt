@@ -1,0 +1,35 @@
+IPR Test Documentation
+
+Investment Performance Report (IPR) Overview
+
+The IPR report analyzes portfolio and benchmark performance and return statistics over selectable time periods.
+
+Key Features:
+1. Return Statistics Analysis
+2. Risk Metrics Calculation  
+3. Performance Attribution
+4. Benchmark Comparison
+
+Input Requirements:
+- Portfolio or Composite selection
+- Time period definition
+- Return basis (Gross or Net)
+- Reporting frequency (Monthly/Quarterly)
+
+Output Components:
+
+Ret Stats Section:
+- Cumulative and Annualized Returns
+- Standard Deviation
+- Sharpe Ratio
+- Information Ratio
+- Alpha and Beta calculations
+- R-Squared values
+
+Risk Metrics:
+- Volatility measurements
+- Drawdown analysis
+- Value at Risk (VaR)
+- Tracking error
+
+This documentation should be processed correctly by the VBAM system for IPR component queries.
