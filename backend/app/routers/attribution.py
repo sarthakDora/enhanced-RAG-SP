@@ -302,34 +302,6 @@ async def list_collections(
         raise HTTPException(status_code=500, detail=f"Failed to list collections: {str(e)}")
 
 
-@router.post("/viz-working")
-async def working_visualization_demo(
-    session_id: str = Form(...),
-    prompt: str = Form(...),
-    chart_type: Optional[str] = Form(None),
-) -> Dict[str, Any]:
-    """Working visualization demo endpoint."""
-    demo_data = [
-        {"name": "Technology", "total": 1.5},
-        {"name": "Healthcare", "total": -0.8},
-        {"name": "Financials", "total": 0.9},
-        {"name": "Energy", "total": -1.2},
-        {"name": "Consumer Discretionary", "total": 0.6}
-    ]
-    
-    return {
-        "status": "success",
-        "session_id": session_id,
-        "title": "Attribution Analysis - Demo",
-        "type": chart_type or "bar",
-        "description": f"Demo chart: {prompt}",
-        "data": {
-            "labels": [item["name"] for item in demo_data],
-            "datasets": [{"label": "Total Attribution (pp)", "data": [item["total"] for item in demo_data]}]
-        },
-        "raw_data": [[item["name"], item["total"]] for item in demo_data],
-        "headers": ["Sector", "Total Attribution"]
-    }
 
 @router.get("/examples")
 async def get_usage_examples() -> Dict[str, Any]:
@@ -415,31 +387,12 @@ async def generate_attribution_visualization(
         if not prompt or not prompt.strip():
             raise HTTPException(status_code=400, detail="Visualization prompt is required")
         
-        # For now, return demo data to demonstrate the feature works
-        # This bypasses the complex data parsing until it's fully debugged
-        demo_data = [
-            {"name": "Technology", "total": 1.5, "allocation": 0.3, "selection": 1.2},
-            {"name": "Healthcare", "total": -0.8, "allocation": -0.2, "selection": -0.6},
-            {"name": "Financials", "total": 0.9, "allocation": 0.5, "selection": 0.4},
-            {"name": "Energy", "total": -1.2, "allocation": -0.8, "selection": -0.4},
-            {"name": "Consumer Discretionary", "total": 0.6, "allocation": 0.1, "selection": 0.5}
-        ]
-        
-        result = {
-            "title": "Sector Attribution Analysis",
-            "type": chart_type or "bar",
-            "description": f"Visualization showing attribution data as requested: {prompt}",
-            "data": {
-                "labels": [item["name"] for item in demo_data],
-                "datasets": [{
-                    "label": "Total Attribution (pp)",
-                    "data": [item["total"] for item in demo_data]
-                }]
-            },
-            "raw_data": [[item["name"], item["total"], item["allocation"], item["selection"]] for item in demo_data],
-            "headers": ["Sector", "Total Attribution", "Allocation Effect", "Selection Effect"],
-            "prompt_used": prompt
-        }
+        # Use the enhanced attribution service to fetch fresh data from Qdrant
+        result = await attribution_service.generate_visualization(
+            session_id=session_id.strip(),
+            prompt=prompt.strip(),
+            preferred_chart_type=chart_type
+        )
         
         return {
             "status": "success",
@@ -450,7 +403,8 @@ async def generate_attribution_visualization(
             "data": result.get("data"),
             "raw_data": result.get("raw_data"),
             "headers": result.get("headers"),
-            "prompt_used": result.get("prompt_used")
+            "prompt_used": result.get("prompt_used"),
+            "data_source": result.get("data_source", "unknown")
         }
         
     except HTTPException:
@@ -460,35 +414,3 @@ async def generate_attribution_visualization(
         raise HTTPException(status_code=500, detail=f"Failed to generate visualization: {str(e)}")
 
 
-@router.post("/viz-demo")
-async def generate_demo_visualization(
-    session_id: str = Form(...),
-    prompt: str = Form(...),
-    chart_type: Optional[str] = Form(None),
-):
-    """Demo visualization endpoint that always works."""
-    # Return demo data directly - no complex processing
-    demo_data = [
-        {"name": "Technology", "total": 1.5, "allocation": 0.3, "selection": 1.2},
-        {"name": "Healthcare", "total": -0.8, "allocation": -0.2, "selection": -0.6},
-        {"name": "Financials", "total": 0.9, "allocation": 0.5, "selection": 0.4},
-        {"name": "Energy", "total": -1.2, "allocation": -0.8, "selection": -0.4},
-        {"name": "Consumer Discretionary", "total": 0.6, "allocation": 0.1, "selection": 0.5}
-    ]
-    
-    return {
-        "status": "success",
-        "session_id": session_id,
-        "title": f"Attribution Analysis - {chart_type or 'Bar'} Chart",
-        "type": chart_type or "bar",
-        "description": f"Demo visualization based on your request: {prompt}",
-        "data": {
-            "labels": [item["name"] for item in demo_data],
-            "datasets": [{
-                "label": "Total Attribution (pp)",
-                "data": [item["total"] for item in demo_data]
-            }]
-        },
-        "raw_data": [[item["name"], item["total"], item["allocation"], item["selection"]] for item in demo_data],
-        "headers": ["Sector", "Total Attribution", "Allocation Effect", "Selection Effect"]
-    }

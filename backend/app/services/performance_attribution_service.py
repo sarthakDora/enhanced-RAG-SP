@@ -1383,7 +1383,7 @@ Interpretation:
         preferred_chart_type: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Generate AI-powered visualizations based on attribution data.
+        Generate AI-powered visualizations based on fresh attribution data from Qdrant.
         
         Args:
             session_id: The attribution session ID
@@ -1398,18 +1398,24 @@ Interpretation:
         
         collection_name = f"attr_session_{session_id}"
         
-        # Always use demo data for now until real data parsing is fixed
-        logger.info(f"Using demo data for visualization in session {session_id}")
-        attribution_data = [
-            {"name": "Technology", "total": 1.5, "allocation": 0.3, "selection": 1.2},
-            {"name": "Healthcare", "total": -0.8, "allocation": -0.2, "selection": -0.6},
-            {"name": "Financials", "total": 0.9, "allocation": 0.5, "selection": 0.4},
-            {"name": "Energy", "total": -1.2, "allocation": -0.8, "selection": -0.4},
-            {"name": "Consumer Discretionary", "total": 0.6, "allocation": 0.1, "selection": 0.5}
-        ]
+        # Check if collection exists and fetch data
+        collection_exists = await self.qdrant.collection_exists(collection_name)
         
-        # Skip complex logic for now and just use demo data
-        # (This ensures the visualization feature works while we debug data parsing)
+        if not collection_exists:
+            logger.error(f"Collection {collection_name} does not exist")
+            raise Exception(f"No attribution data available for session {session_id}. Please upload an attribution file first.")
+        
+        # Fetch fresh data from Qdrant collection
+        logger.info(f"Fetching fresh attribution data from collection {collection_name}")
+        attribution_data = await self._fetch_attribution_data_from_qdrant(collection_name)
+        
+        # If no data found in Qdrant, raise error
+        if not attribution_data:
+            logger.error(f"No attribution data found in collection {collection_name}")
+            raise Exception(f"No attribution data found in collection {collection_name}. The collection exists but contains no processable attribution data.")
+        
+        data_source = "qdrant"
+        logger.info(f"Using fresh data from Qdrant: {len(attribution_data)} data points")
         
         # Generate visualization prompt for AI
         system_prompt = self._build_visualization_system_prompt(preferred_chart_type)
@@ -1424,6 +1430,7 @@ Interpretation:
         
         # Parse AI response to extract chart specifications
         chart_spec = self._parse_visualization_response(response.get("response", ""))
+        logger.info(f"AI chart specification: {chart_spec}")
         
         # Generate actual chart data based on the specification
         chart_data = self._generate_chart_data(attribution_data, chart_spec, prompt)
@@ -1435,8 +1442,251 @@ Interpretation:
             "data": chart_data.get("data"),
             "raw_data": chart_data.get("raw_data"),
             "headers": chart_data.get("headers"),
-            "prompt_used": user_prompt
+            "prompt_used": user_prompt,
+            "data_source": data_source
         }
+
+    async def _fetch_attribution_data_from_qdrant(self, collection_name: str) -> List[Dict[str, Any]]:
+        """
+        Fetch fresh attribution data from Qdrant collection chunks.
+        
+        Args:
+            collection_name: The Qdrant collection name
+            
+        Returns:
+            List of attribution data points with sector/bucket, total, allocation, selection etc.
+        """
+        try:
+            attribution_data = []
+            
+            # Get all points from the collection using scroll
+            offset = None
+            limit = 100
+            
+            while True:
+                try:
+                    scroll_result = self.qdrant.client.scroll(
+                        collection_name=collection_name,
+                        limit=limit,
+                        offset=offset,
+                        with_payload=True,
+                        with_vectors=False  # We don't need vectors for visualization
+                    )
+                    
+                    if not scroll_result[0]:  # No more points
+                        break
+                    
+                    for point in scroll_result[0]:
+                        payload = point.payload
+                        if not payload:
+                            continue
+                        
+                        # Look for row-type chunks with attribution data
+                        if payload.get("type") == "row" and payload.get("bucket"):
+                            row_data = {
+                                "name": payload.get("bucket", "Unknown"),
+                                "sector": payload.get("bucket", "Unknown"),
+                                "bucket": payload.get("bucket", "Unknown")
+                            }
+                            
+                            # Extract numerical attribution values
+                            total_mgmt = _none_if_nan(payload.get("total_management"))
+                            allocation = _none_if_nan(payload.get("allocation_effect_pp"))
+                            selection = _none_if_nan(payload.get("selection_effect_pp"))
+                            fx = _none_if_nan(payload.get("fx_pp"))
+                            carry = _none_if_nan(payload.get("carry_pp"))
+                            roll = _none_if_nan(payload.get("roll_pp"))
+                            price = _none_if_nan(payload.get("price_pp"))
+                            
+                            # Portfolio and benchmark data
+                            portfolio_ror = _none_if_nan(payload.get("portfolio_ror"))
+                            benchmark_ror = _none_if_nan(payload.get("benchmark_ror"))
+                            active_ror = _none_if_nan(payload.get("active_ror_pp"))
+                            portfolio_weight = _none_if_nan(payload.get("portfolio_weight"))
+                            benchmark_weight = _none_if_nan(payload.get("benchmark_weight"))
+                            
+                            # Add values if they exist
+                            if total_mgmt is not None:
+                                row_data["total"] = total_mgmt
+                                row_data["total_management"] = total_mgmt
+                            
+                            if allocation is not None:
+                                row_data["allocation"] = allocation
+                                row_data["allocation_effect"] = allocation
+                            
+                            if selection is not None:
+                                row_data["selection"] = selection
+                                row_data["selection_effect"] = selection
+                            
+                            if fx is not None:
+                                row_data["fx"] = fx
+                                row_data["fx_effect"] = fx
+                            
+                            if carry is not None:
+                                row_data["carry"] = carry
+                            
+                            if roll is not None:
+                                row_data["roll"] = roll
+                            
+                            if price is not None:
+                                row_data["price"] = price
+                            
+                            if portfolio_ror is not None:
+                                row_data["portfolio_return"] = portfolio_ror
+                            
+                            if benchmark_ror is not None:
+                                row_data["benchmark_return"] = benchmark_ror
+                            
+                            if active_ror is not None:
+                                row_data["active_return"] = active_ror
+                            
+                            if portfolio_weight is not None:
+                                row_data["portfolio_weight"] = portfolio_weight
+                            
+                            if benchmark_weight is not None:
+                                row_data["benchmark_weight"] = benchmark_weight
+                            
+                            # Only add if we have at least one meaningful numerical value
+                            has_data = any(k in row_data for k in [
+                                "total", "allocation", "selection", "fx", "carry", "roll", "price",
+                                "portfolio_return", "benchmark_return", "active_return"
+                            ])
+                            
+                            if has_data:
+                                attribution_data.append(row_data)
+                    
+                    # Check if we need to continue scrolling
+                    if len(scroll_result[0]) < limit:
+                        break
+                    
+                    offset = scroll_result[1]  # Next offset
+                    
+                except Exception as e:
+                    logger.error(f"Error during scroll operation: {e}")
+                    break
+            
+            # Process ranking data if no row data found
+            if not attribution_data:
+                logger.info("No row data found, checking for ranking data")
+                attribution_data = await self._extract_ranking_data_from_qdrant(collection_name)
+            
+            # Sort by total attribution if available
+            if attribution_data:
+                def get_sort_key(item):
+                    for key in ["total", "total_management", "allocation"]:
+                        value = item.get(key)
+                        if isinstance(value, (int, float)):
+                            return value
+                    return 0
+                
+                attribution_data.sort(key=get_sort_key, reverse=True)
+                logger.info(f"Retrieved {len(attribution_data)} attribution data points from Qdrant")
+                
+                # Log sample data for debugging
+                if attribution_data:
+                    sample = attribution_data[0]
+                    logger.info(f"Sample data point: {sample}")
+            
+            return attribution_data
+            
+        except Exception as e:
+            logger.error(f"Error fetching attribution data from Qdrant: {e}")
+            return []
+
+    async def _extract_ranking_data_from_qdrant(self, collection_name: str) -> List[Dict[str, Any]]:
+        """
+        Extract ranking data from Qdrant as fallback when no row data is available.
+        
+        Args:
+            collection_name: The Qdrant collection name
+            
+        Returns:
+            List of attribution data extracted from ranking chunks
+        """
+        try:
+            attribution_data = []
+            
+            # Look for ranking-type chunks
+            search_filter = Filter(
+                must=[
+                    FieldCondition(
+                        key="type",
+                        match=Match(value="ranking")
+                    )
+                ]
+            )
+            
+            # Search for ranking chunks
+            search_results = self.qdrant.client.search(
+                collection_name=collection_name,
+                query_vector=[0.0] * 768,  # Dummy vector for filter-only search
+                query_filter=search_filter,
+                limit=50,
+                with_payload=True,
+                score_threshold=0.0  # Accept all results since we're filtering
+            )
+            
+            for result in search_results:
+                payload = result.payload
+                if not payload:
+                    continue
+                
+                # Extract contributors and detractors from ranking data
+                contributors = payload.get("top_contributors", [])
+                detractors = payload.get("top_detractors", [])
+                
+                # Process contributors
+                if isinstance(contributors, list):
+                    for item in contributors:
+                        if isinstance(item, dict) and "bucket" in item:
+                            data_point = {
+                                "name": item.get("bucket", "Unknown"),
+                                "sector": item.get("bucket", "Unknown"),
+                                "bucket": item.get("bucket", "Unknown"),
+                                "type": "contributor"
+                            }
+                            
+                            # Extract numerical values
+                            if "pp" in item:
+                                data_point["total"] = item["pp"]
+                                data_point["total_management"] = item["pp"]
+                            
+                            # Extract other attribution effects if present
+                            for field in ["allocation_effect", "selection_effect", "total_management"]:
+                                if field in item and isinstance(item[field], (int, float)):
+                                    data_point[field.replace("_effect", "")] = item[field]
+                            
+                            attribution_data.append(data_point)
+                
+                # Process detractors
+                if isinstance(detractors, list):
+                    for item in detractors:
+                        if isinstance(item, dict) and "bucket" in item:
+                            data_point = {
+                                "name": item.get("bucket", "Unknown"),
+                                "sector": item.get("bucket", "Unknown"),
+                                "bucket": item.get("bucket", "Unknown"),
+                                "type": "detractor"
+                            }
+                            
+                            # Extract numerical values
+                            if "pp" in item:
+                                data_point["total"] = item["pp"]
+                                data_point["total_management"] = item["pp"]
+                            
+                            # Extract other attribution effects if present
+                            for field in ["allocation_effect", "selection_effect", "total_management"]:
+                                if field in item and isinstance(item[field], (int, float)):
+                                    data_point[field.replace("_effect", "")] = item[field]
+                            
+                            attribution_data.append(data_point)
+            
+            logger.info(f"Extracted {len(attribution_data)} data points from ranking chunks")
+            return attribution_data
+            
+        except Exception as e:
+            logger.error(f"Error extracting ranking data from Qdrant: {e}")
+            return []
     
     def _parse_attribution_content(self, content: str) -> List[Dict[str, Any]]:
         """Parse attribution content to extract structured data."""
@@ -1625,19 +1875,38 @@ Interpretation:
 Your task is to analyze attribution data and provide chart specifications in JSON format.
 
 Respond with a JSON object containing:
-- "title": A descriptive title for the chart
+- "title": A descriptive title for the chart (avoid mentioning "demo" - use specific terms like "Country Attribution", "Sector Performance", etc.)
 - "type": Chart type (bar, line, pie, scatter, table)
 - "description": Brief analysis of what the chart shows
 - "fields": Array of field names to use for the visualization
 - "sort_by": Field to sort by (optional)
 - "sort_order": "asc" or "desc" (optional)
+- "color_by": Field to use for color coding (optional)
+- "x_axis_title": Title for X axis (optional)
+- "y_axis_title": Title for Y axis (optional)
 
 Available chart types:
 - bar: Best for comparing categories (sectors, countries)
 - line: Best for trends over time
 - pie: Best for showing proportions/composition
 - scatter: Best for showing relationships between two variables
-- table: Best for detailed data listing"""
+- table: Best for detailed data listing
+
+Common Attribution Data Fields:
+- name/sector/bucket: Entity name (country, sector, security)
+- allocation/allocation_effect: Allocation effect in percentage points
+- selection/selection_effect: Selection effect in percentage points  
+- fx/fx_effect: Currency/FX effect in percentage points
+- carry: Carry/yield effect in percentage points
+- roll: Roll-down effect in percentage points
+- price: Price return effect in percentage points
+- portfolio_return: Portfolio return percentage
+- benchmark_return: Benchmark return percentage
+- active_return: Active return (portfolio minus benchmark)
+- portfolio_weight: Portfolio weight percentage
+- benchmark_weight: Benchmark weight percentage
+
+Create meaningful titles that reflect the actual data being visualized (e.g., "Fixed Income Country Attribution Q2 2025", "Emerging Markets Performance Breakdown", "Attribution Effects by Country")."""
         
         if preferred_chart_type:
             base_prompt += f"\n\nUser prefers {preferred_chart_type} chart type. Use this unless clearly inappropriate."
@@ -1652,16 +1921,43 @@ Available chart types:
         for item in attribution_data:
             available_fields.update(item.keys())
         
+        # Determine data characteristics
+        has_countries = any('country' in str(item.get('name', '')).lower() or 'country' in str(item.get('sector', '')).lower() for item in attribution_data)
+        has_sectors = any('sector' in str(item.get('name', '')).lower() or any(sector in str(item.get('name', '')).lower() for sector in ['technology', 'healthcare', 'financial', 'energy', 'consumer']) for item in attribution_data)
+        
+        data_type = "country" if has_countries else "sector" if has_sectors else "entity"
+        
+        # Look for period information in the data
+        period_info = ""
+        if attribution_data:
+            first_item = attribution_data[0]
+            # Check for period in any text fields
+            for key, value in first_item.items():
+                if isinstance(value, str) and any(period in value for period in ['Q1', 'Q2', 'Q3', 'Q4', '2024', '2025']):
+                    period_match = None
+                    import re
+                    period_match = re.search(r'(Q[1-4]\s+202[4-9]|202[4-9])', value)
+                    if period_match:
+                        period_info = f" for {period_match.group()}"
+                        break
+        
         return f"""User request: {prompt}
 
-Available attribution data fields: {list(available_fields)}
+Data Context: This appears to be {data_type}-level attribution data{period_info} with {len(attribution_data)} data points.
 
-Sample data (first 5 items):
-{json.dumps(sample_data, indent=2)}
+Available attribution data fields: {list(sorted(available_fields))}
+
+Key metrics available:
+- Attribution effects: {[f for f in available_fields if any(x in f for x in ['allocation', 'selection', 'fx', 'carry', 'roll', 'price'])]}
+- Returns: {[f for f in available_fields if 'return' in f]}
+- Weights: {[f for f in available_fields if 'weight' in f]}
+
+Sample data (first 3 items):
+{json.dumps(sample_data[:3], indent=2)}
 
 Total items available: {len(attribution_data)}
 
-Please provide chart specifications in JSON format."""
+Please provide chart specifications in JSON format with an appropriate title that reflects this {data_type} attribution analysis{period_info}."""
     
     def _parse_visualization_response(self, response: str) -> Dict[str, Any]:
         """Parse AI response to extract chart specifications."""
@@ -1696,6 +1992,7 @@ Please provide chart specifications in JSON format."""
         # Filter and prepare data
         filtered_data = []
         suggested_fields = chart_spec.get("fields", ["name", "total"])
+        logger.info(f"Suggested fields from AI: {suggested_fields}")
         
         # Find available fields in the data
         available_fields = set()
@@ -1717,7 +2014,14 @@ Please provide chart specifications in JSON format."""
                     fields.append(field)
                     break
         
+        logger.info(f"Final fields to use: {fields}")
+        
         for item in attribution_data:
+            # Skip "Total" rows as they are aggregates, not individual sectors/countries
+            item_name = item.get("name", "").lower()
+            if item_name in ["total", "totals", "aggregate", "sum"]:
+                continue
+                
             row = {}
             for field in fields:
                 if field in item:
@@ -1752,20 +2056,109 @@ Please provide chart specifications in JSON format."""
         # Create chart-specific data structure
         chart_data = {
             "labels": [item.get("name", "") for item in filtered_data],
-            "datasets": []
+            "datasets": [],
+            "axis_titles": {
+                "x": chart_spec.get("x_axis_title", ""),
+                "y": chart_spec.get("y_axis_title", "")
+            }
         }
         
-        # Add datasets based on fields
+        # Add datasets based on fields (only numeric fields)
         for field in fields:
-            if field != "name":
-                dataset = {
-                    "label": field.title(),
-                    "data": [item.get(field, 0) for item in filtered_data]
-                }
-                chart_data["datasets"].append(dataset)
+            # Skip any field that could be a label/name field
+            if field in ["name", "sector", "bucket"]:
+                continue
+                
+            # Check if this field contains numeric data
+            field_values = [item.get(field, 0) for item in filtered_data]
+            
+            # More robust check for numeric data
+            numeric_values = []
+            for v in field_values:
+                if v is not None and v != "":
+                    if isinstance(v, (int, float)):
+                        numeric_values.append(v)
+                    else:
+                        # Field contains non-numeric data, skip it
+                        break
+            else:
+                # Only add if we have numeric values and all values were numeric
+                if numeric_values and len(numeric_values) == len([v for v in field_values if v is not None and v != ""]):
+                    # Generate colors based on color_by field or default color scheme
+                    colors = self._generate_colors(field_values, chart_spec.get("color_by"), filtered_data)
+                    
+                    dataset = {
+                        "label": field.replace("_", " ").title(),
+                        "data": field_values,
+                        "backgroundColor": colors,
+                        "borderColor": colors
+                    }
+                    chart_data["datasets"].append(dataset)
+                    logger.info(f"Added numeric dataset: {field} with {len(field_values)} values")
         
         return {
             "data": chart_data,
             "raw_data": raw_data,
             "headers": headers
         }
+    
+    def _generate_colors(self, values: List[Any], color_by: Optional[str], data_items: List[Dict[str, Any]]) -> List[str]:
+        """Generate colors for chart data based on values or color_by field."""
+        if color_by and color_by in data_items[0] if data_items else False:
+            # Color by specific field
+            color_values = [item.get(color_by, 0) for item in data_items[:len(values)]]
+            return self._color_by_values(color_values)
+        else:
+            # Default color scheme based on positive/negative values
+            return self._color_by_sign(values)
+    
+    def _color_by_values(self, values: List[Any]) -> List[str]:
+        """Generate colors based on value ranges."""
+        if not values:
+            return []
+        
+        # Normalize values to 0-1 range for color mapping
+        numeric_values = [v for v in values if isinstance(v, (int, float))]
+        if not numeric_values:
+            return ['#4CAF50'] * len(values)
+        
+        min_val = min(numeric_values)
+        max_val = max(numeric_values)
+        range_val = max_val - min_val if max_val != min_val else 1
+        
+        colors = []
+        for value in values:
+            if isinstance(value, (int, float)):
+                # Normalize to 0-1
+                normalized = (value - min_val) / range_val
+                # Generate color from red (low) to green (high)
+                if normalized < 0.5:
+                    # Red to yellow
+                    r = 255
+                    g = int(255 * normalized * 2)
+                    b = 0
+                else:
+                    # Yellow to green
+                    r = int(255 * (1 - (normalized - 0.5) * 2))
+                    g = 255
+                    b = 0
+                colors.append(f'rgb({r}, {g}, {b})')
+            else:
+                colors.append('#4CAF50')  # Default green
+        
+        return colors
+    
+    def _color_by_sign(self, values: List[Any]) -> List[str]:
+        """Generate colors based on positive/negative values."""
+        colors = []
+        for value in values:
+            if isinstance(value, (int, float)):
+                if value > 0:
+                    colors.append('#4CAF50')  # Green for positive
+                elif value < 0:
+                    colors.append('#F44336')  # Red for negative
+                else:
+                    colors.append('#9E9E9E')  # Gray for zero
+            else:
+                colors.append('#2196F3')  # Blue for non-numeric
+        return colors
